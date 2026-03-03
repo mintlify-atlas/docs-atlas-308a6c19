@@ -1,0 +1,347 @@
+---
+title: "cloudstic completion"
+description: "Generate shell completion scripts for bash, zsh, and fish"
+---
+
+The `completion` command generates shell completion scripts that provide intelligent tab completion for Cloudstic commands, subcommands, flags, and values.
+
+## Usage
+
+```bash
+cloudstic completion <shell>
+```
+
+### Supported Shells
+
+- **bash** — Bourne Again Shell
+- **zsh** — Z Shell
+- **fish** — Friendly Interactive Shell
+
+## Installation
+
+<Steps>
+  <Step title="Generate the completion script">
+    Run the completion command for your shell. The script is printed to stdout.
+
+    ```bash
+    # Bash
+    cloudstic completion bash
+
+    # Zsh
+    cloudstic completion zsh
+
+    # Fish
+    cloudstic completion fish
+    ```
+  </Step>
+
+  <Step title="Load the completion script">
+    Source the completion script in your current shell session or add it to your shell configuration file.
+
+    ### Bash
+
+    **For current session only:**
+    ```bash
+    source <(cloudstic completion bash)
+    ```
+
+    **Permanent installation:**
+    ```bash
+    # Add to ~/.bashrc or ~/.bash_profile
+    echo 'source <(cloudstic completion bash)' >> ~/.bashrc
+    ```
+
+    **Alternative: Install to system completion directory**
+    ```bash
+    cloudstic completion bash > /etc/bash_completion.d/cloudstic
+    ```
+
+    ### Zsh
+
+    **For current session only:**
+    ```bash
+    source <(cloudstic completion zsh)
+    ```
+
+    **Permanent installation:**
+    ```bash
+    # Add to ~/.zshrc
+    echo 'source <(cloudstic completion zsh)' >> ~/.zshrc
+    ```
+
+    **Alternative: Install to completion directory**
+    ```bash
+    cloudstic completion zsh > "${fpath[1]}/_cloudstic"
+    ```
+
+    ### Fish
+
+    **For current session only:**
+    ```bash
+    cloudstic completion fish | source
+    ```
+
+    **Permanent installation:**
+    ```bash
+    # Fish automatically loads completions from ~/.config/fish/completions/
+    cloudstic completion fish > ~/.config/fish/completions/cloudstic.fish
+    ```
+  </Step>
+
+  <Step title="Reload your shell or start a new session">
+    For bash and zsh:
+    ```bash
+    exec $SHELL
+    ```
+
+    For fish:
+    ```bash
+    exec fish
+    ```
+
+    Or simply open a new terminal window.
+  </Step>
+
+  <Step title="Test the completion">
+    Try typing `cloudstic ` and press Tab to see available commands:
+
+    ```bash
+    cloudstic <TAB>
+    # Shows: init backup restore list ls prune forget diff break-lock key cat completion version help
+    ```
+  </Step>
+</Steps>
+
+## Features
+
+The completion scripts provide intelligent suggestions for:
+
+### Commands and Subcommands
+
+```bash
+cloudstic <TAB>
+# Shows all available commands
+
+cloudstic key <TAB>
+# Shows: list add-recovery passwd
+```
+
+### Flags and Options
+
+```bash
+cloudstic backup -<TAB>
+# Shows: -source -source-path -drive-id -root-folder -tag -dry-run
+# Plus all global flags
+
+cloudstic init -<TAB>
+# Shows: -recovery -no-encryption
+# Plus all global flags
+```
+
+### Flag Values
+
+```bash
+cloudstic backup -source <TAB>
+# Shows: local sftp gdrive gdrive-changes onedrive onedrive-changes
+
+cloudstic -store <TAB>
+# Shows: local b2 s3 sftp
+```
+
+### File Path Completion
+
+```bash
+cloudstic backup -source-path <TAB>
+# Shows directory completions from your filesystem
+
+cloudstic restore -output <TAB>
+# Shows file completions
+```
+
+### Context-Aware Completions
+
+The completion scripts understand the current command context:
+
+```bash
+cloudstic backup -source local -<TAB>
+# Shows backup-specific flags and global flags
+
+cloudstic key passwd -<TAB>
+# Shows: -new-password (plus global flags)
+```
+
+## Completion Examples
+
+### Completing Store Types
+
+```bash
+$ cloudstic backup -store <TAB>
+local  b2  s3  sftp
+```
+
+### Completing Source Types
+
+```bash
+$ cloudstic backup -source <TAB>
+local  sftp  gdrive  gdrive-changes  onedrive  onedrive-changes
+```
+
+### Completing Subcommands
+
+```bash
+$ cloudstic <TAB>
+init        backup      restore     list        ls          prune
+forget      diff        break-lock  key         cat         completion
+version     help
+```
+
+### Completing Shell Types
+
+```bash
+$ cloudstic completion <TAB>
+bash  zsh  fish
+```
+
+## Troubleshooting
+
+### Bash: Completions not working
+
+1. Ensure `bash-completion` package is installed:
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get install bash-completion
+
+   # macOS
+   brew install bash-completion@2
+   ```
+
+2. Verify bash-completion is loaded in your `.bashrc`:
+   ```bash
+   # Add if missing
+   if [ -f /etc/bash_completion ]; then
+     . /etc/bash_completion
+   fi
+   ```
+
+### Zsh: Command not found: compdef
+
+1. Enable `compinit` in your `.zshrc` before sourcing the completion:
+   ```bash
+   autoload -Uz compinit
+   compinit
+   source <(cloudstic completion zsh)
+   ```
+
+### Fish: Completions not appearing
+
+1. Check that the completion file was created:
+   ```bash
+   ls ~/.config/fish/completions/cloudstic.fish
+   ```
+
+2. Reload completions:
+   ```bash
+   fish_update_completions
+   ```
+
+### General: Old completions cached
+
+If you update Cloudstic and completions don't reflect new commands:
+
+```bash
+# Bash: Clear completion cache
+hash -r
+
+# Zsh: Clear completion cache
+rm ~/.zcompdump*
+compinit
+
+# Fish: Reload completions
+fish_update_completions
+```
+
+## Available Completions
+
+The completion scripts provide suggestions for:
+
+### Global Flags (available in all commands)
+
+- `-store` → `local`, `b2`, `s3`, `sftp`
+- `-store-path` → file path completion
+- `-store-prefix` → free text
+- `-s3-endpoint` → free text
+- `-s3-region` → free text
+- `-s3-access-key` → free text
+- `-s3-secret-key` → free text
+- `-sftp-host` → hostname completion
+- `-sftp-port` → free text (default: `22`)
+- `-sftp-user` → username completion
+- `-sftp-password` → free text
+- `-sftp-key` → file path completion
+- `-encryption-key` → free text
+- `-encryption-password` → free text
+- `-recovery-key` → free text
+- `-kms-key-arn` → free text
+- `-enable-packfile` → boolean flag
+- `-verbose` → boolean flag
+- `-quiet` → boolean flag
+- `-debug` → boolean flag
+
+### Command-Specific Flags
+
+**`init`**
+- `-recovery`
+- `-no-encryption`
+
+**`backup`**
+- `-source` → `local`, `sftp`, `gdrive`, `gdrive-changes`, `onedrive`, `onedrive-changes`
+- `-source-path` → file path completion
+- `-drive-id` → free text
+- `-root-folder` → free text
+- `-tag` → free text (repeatable)
+- `-dry-run`
+
+**`restore`**
+- `-output` → file path completion (default: `./restore.zip`)
+- `-path` → free text
+- `-dry-run`
+
+**`prune`**
+- `-dry-run`
+
+**`forget`**
+- `-prune`
+- `-dry-run`
+- `-keep-last` → number
+- `-keep-hourly` → number
+- `-keep-daily` → number
+- `-keep-weekly` → number
+- `-keep-monthly` → number
+- `-keep-yearly` → number
+- `-tag` → free text (repeatable)
+- `-source` → free text
+- `-account` → free text
+- `-path` → free text
+- `-group-by` → free text (default: `source,account,path`)
+
+**`cat`**
+- `-json`
+
+**`key passwd`**
+- `-new-password` → free text
+
+**`check`**
+- `-read-data`
+- `-snapshot` → free text
+
+## Notes
+
+- **Performance**: Completions are generated dynamically based on the current command context
+- **File completions**: File and directory paths use native shell completion capabilities
+- **No external dependencies**: Completion scripts are self-contained and don't require network access
+- **Automatic updates**: Regenerate completions after upgrading Cloudstic to get the latest commands and flags
+
+## Related Commands
+
+-  — Display usage information
+-  — Print version information

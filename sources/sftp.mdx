@@ -1,0 +1,427 @@
+---
+title: SFTP Source
+description: Back up files from remote SFTP servers with Cloudstic CLI
+---
+
+The **SFTP** source backs up files from a remote server via SSH File Transfer Protocol. This allows you to back up remote servers without installing Cloudstic on them.
+
+## Basic Usage
+
+Back up a remote directory via SFTP:
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /home/user/data \
+  -source-sftp-host example.com \
+  -source-sftp-user myuser \
+  -source-sftp-password "mypassword"
+```
+
+## Configuration Options
+
+### Required Flags
+
+| Flag | Description | Environment Variable |
+|------|-------------|---------------------|
+| `-source sftp` | Specifies SFTP source | `CLOUDSTIC_SOURCE` |
+| `-source-path <path>` | Remote directory path | `CLOUDSTIC_SOURCE_PATH` |
+| `-source-sftp-host <host>` | SFTP server hostname | `CLOUDSTIC_SFTP_HOST` |
+| `-source-sftp-user <user>` | SSH username | `CLOUDSTIC_SFTP_USER` |
+
+### Authentication Flags
+
+| Flag | Description | Environment Variable |
+|------|-------------|---------------------|
+| `-source-sftp-password <pw>` | SSH password | `CLOUDSTIC_SFTP_PASSWORD` |
+| `-source-sftp-key <path>` | Path to SSH private key | `CLOUDSTIC_SFTP_KEY` |
+| `-source-sftp-port <port>` | SSH port (default: 22) | `CLOUDSTIC_SFTP_PORT` |
+
+### Optional Flags
+
+| Flag | Description |
+|------|-------------|
+| `-exclude <pattern>` | Exclude pattern (gitignore syntax, repeatable) |
+| `-exclude-file <path>` | Load exclude patterns from file |
+| `-tag <tag>` | Tag to apply to the snapshot (repeatable) |
+| `-dry-run` | Scan source without writing to store |
+
+## Authentication Methods
+
+Cloudstic supports three SSH authentication methods:
+
+### 1. Private Key (Recommended)
+
+Use an SSH private key for authentication:
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /var/www \
+  -source-sftp-host web-server.com \
+  -source-sftp-user deploy \
+  -source-sftp-key ~/.ssh/id_rsa
+```
+
+### 2. Password
+
+Use password authentication:
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /home/user/files \
+  -source-sftp-host example.com \
+  -source-sftp-user myuser \
+  -source-sftp-password "mypassword"
+```
+
+<Warning>
+Avoid hardcoding passwords in scripts. Use environment variables or SSH keys instead.
+</Warning>
+
+### 3. SSH Agent (Automatic)
+
+If `SSH_AUTH_SOCK` is set, Cloudstic automatically uses your SSH agent:
+
+```bash
+# Start SSH agent and add your key
+ssh-add ~/.ssh/id_rsa
+
+# Cloudstic will automatically use the agent
+cloudstic backup -source sftp \
+  -source-path /home/user/files \
+  -source-sftp-host example.com \
+  -source-sftp-user myuser
+```
+
+## Examples
+
+### Backup Web Server
+
+Back up a web server's document root:
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /var/www/html \
+  -source-sftp-host web01.example.com \
+  -source-sftp-user www-data \
+  -source-sftp-key ~/.ssh/deploy_key \
+  -tag "webserver" \
+  -tag "production"
+```
+
+### Backup with Custom Port
+
+Connect to a non-standard SSH port:
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /data \
+  -source-sftp-host server.example.com \
+  -source-sftp-port 2222 \
+  -source-sftp-user backup \
+  -source-sftp-key ~/.ssh/id_ed25519
+```
+
+### Backup with Exclusions
+
+Exclude cache and temporary files:
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /home/user/app \
+  -source-sftp-host app-server.com \
+  -source-sftp-user appuser \
+  -source-sftp-password "$SFTP_PASSWORD" \
+  -exclude "*.log" \
+  -exclude "cache/" \
+  -exclude "tmp/"
+```
+
+### Multiple Server Backups
+
+Back up multiple servers sequentially:
+
+<CodeGroup>
+```bash Script
+#!/bin/bash
+set -e
+
+SERVERS=("web01" "web02" "web03")
+
+for server in "${SERVERS[@]}"; do
+  echo "Backing up $server..."
+  cloudstic backup -source sftp \
+    -source-path /var/www \
+    -source-sftp-host "$server.example.com" \
+    -source-sftp-user deploy \
+    -source-sftp-key ~/.ssh/deploy_key \
+    -tag "webserver" \
+    -tag "$server"
+done
+```
+
+```bash Environment Variables
+#!/bin/bash
+# Set common SFTP credentials
+export CLOUDSTIC_SFTP_USER=deploy
+export CLOUDSTIC_SFTP_KEY=~/.ssh/deploy_key
+export CLOUDSTIC_SOURCE=sftp
+
+# Backup multiple hosts
+for host in web01 web02 web03; do
+  cloudstic backup \
+    -source-sftp-host "$host.example.com" \
+    -source-path /var/www \
+    -tag "$host"
+done
+```
+</CodeGroup>
+
+## How It Works
+
+### Connection Process
+
+<Steps>
+  <Step title="Establish SSH connection">
+    Cloudstic connects to the SFTP server using the provided credentials.
+  </Step>
+  
+  <Step title="Authenticate">
+    Authentication is attempted in order:
+    1. Private key (if specified)
+    2. Password (if specified)
+    3. SSH agent (if available)
+  </Step>
+  
+  <Step title="Initialize SFTP session">
+    An SFTP session is created over the SSH connection.
+  </Step>
+  
+  <Step title="Walk directory tree">
+    The remote directory is recursively scanned.
+  </Step>
+  
+  <Step title="Stream files">
+    Files are streamed over SFTP as they are backed up.
+  </Step>
+</Steps>
+
+### File Identification
+
+SFTP files are identified by their relative path from the source root:
+
+- Source path: `/home/user/data`
+- File: `/home/user/data/reports/Q1.pdf`
+- File ID: `reports/Q1.pdf`
+
+### Source Information
+
+Each snapshot records:
+- **Type**: `sftp`
+- **Account**: `user@host` (e.g., `deploy@web-server.com`)
+- **Path**: Remote directory path (e.g., `/var/www/html`)
+
+## Security Considerations
+
+### SSH Host Key Verification
+
+<Warning>
+By default, Cloudstic accepts any SSH host key (equivalent to `StrictHostKeyChecking=no`). For production use, consider:
+
+- Pre-adding the server's host key to `~/.ssh/known_hosts`
+- Using SSH certificates
+- Implementing custom host key verification
+</Warning>
+
+### Credential Management
+
+Best practices for managing SFTP credentials:
+
+<Steps>
+  <Step title="Use SSH keys instead of passwords">
+    Generate a dedicated key pair:
+    ```bash
+    ssh-keygen -t ed25519 -f ~/.ssh/cloudstic_backup -C "cloudstic backup"
+    ssh-copy-id -i ~/.ssh/cloudstic_backup.pub user@server
+    ```
+  </Step>
+  
+  <Step title="Use environment variables">
+    Avoid hardcoding credentials:
+    ```bash
+    export CLOUDSTIC_SFTP_PASSWORD="$VAULT_SFTP_PASS"
+    cloudstic backup -source sftp ...
+    ```
+  </Step>
+  
+  <Step title="Restrict key permissions">
+    Ensure private keys are secure:
+    ```bash
+    chmod 600 ~/.ssh/cloudstic_backup
+    ```
+  </Step>
+  
+  <Step title="Use a dedicated backup user">
+    Create a read-only user for backups:
+    ```bash
+    # On the remote server
+    useradd -m -s /bin/bash backup-user
+    # Configure read-only access to backup directories
+    ```
+  </Step>
+</Steps>
+
+## Performance Considerations
+
+### Network Overhead
+
+SFTP backups are slower than local backups due to:
+- Network latency
+- SSH encryption overhead
+- Remote filesystem access
+
+### Typical Performance
+
+- **Small files**: 100-500 files/second
+- **Large files**: Limited by network bandwidth
+- **Network**: 10-100 MB/s depending on connection
+
+### Optimizing SFTP Backups
+
+<Steps>
+  <Step title="Use exclude patterns">
+    Reduce data transfer:
+    ```bash
+    -exclude "*.log" -exclude "cache/" -exclude "tmp/"
+    ```
+  </Step>
+  
+  <Step title="Backup during off-peak hours">
+    Schedule backups when network usage is low.
+  </Step>
+  
+  <Step title="Use compression">
+    Cloudstic automatically compresses data before storage.
+  </Step>
+  
+  <Step title="Enable packfiles">
+    Bundle small objects to reduce round trips (enabled by default).
+  </Step>
+</Steps>
+
+## Common Use Cases
+
+### Web Server Backups
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /var/www \
+  -source-sftp-host web01.example.com \
+  -source-sftp-user www-data \
+  -source-sftp-key ~/.ssh/deploy_key \
+  -exclude "cache/" \
+  -exclude "*.log" \
+  -tag "webserver"
+```
+
+### Database Server Backups
+
+```bash
+# Backup database dumps
+cloudstic backup -source sftp \
+  -source-path /backup/mysql \
+  -source-sftp-host db01.example.com \
+  -source-sftp-user backup \
+  -source-sftp-key ~/.ssh/backup_key \
+  -tag "database" \
+  -tag "mysql"
+```
+
+### Application Server Backups
+
+```bash
+cloudstic backup -source sftp \
+  -source-path /opt/app \
+  -source-sftp-host app-server.com \
+  -source-sftp-user appuser \
+  -source-sftp-key ~/.ssh/app_key \
+  -exclude "logs/" \
+  -exclude "temp/" \
+  -tag "application"
+```
+
+## Troubleshooting
+
+### Connection Refused
+
+```bash
+Error: ssh dial example.com:22: connection refused
+```
+
+**Solutions:**
+- Check that SSH service is running on the remote server
+- Verify the hostname and port are correct
+- Check firewall rules
+
+### Authentication Failed
+
+```bash
+Error: ssh: unable to authenticate
+```
+
+**Solutions:**
+- Verify username and credentials
+- Check SSH key permissions (must be 600)
+- Ensure the public key is in `~/.ssh/authorized_keys` on the server
+- Try password authentication if key auth fails
+
+### Permission Denied
+
+```bash
+Error: permission denied
+```
+
+**Solutions:**
+- Check that the user has read access to the source directory
+- Verify the source path is correct
+- Check filesystem permissions on the remote server
+
+### Slow Backups
+
+If SFTP backups are taking too long:
+
+1. **Use exclude patterns** to reduce data transfer
+2. **Check network bandwidth** between source and destination
+3. **Consider local backups** if possible (install Cloudstic on the remote server)
+4. **Run backups during off-peak hours**
+
+## Environment Variables
+
+Set default SFTP credentials:
+
+```bash
+export CLOUDSTIC_SOURCE=sftp
+export CLOUDSTIC_SFTP_HOST=example.com
+export CLOUDSTIC_SFTP_USER=backup
+export CLOUDSTIC_SFTP_KEY=~/.ssh/backup_key
+export CLOUDSTIC_SFTP_PORT=22
+
+# Now run backup with minimal flags
+cloudstic backup -source-path /var/www
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Local Source" icon="folder" href="/sources/local">
+    Learn about backing up local directories
+  </Card>
+  <Card title="SSH Key Setup" icon="key" href="/guides/ssh-keys">
+    Set up SSH keys for authentication
+  </Card>
+  <Card title="Scheduling Backups" icon="clock" href="/guides/scheduling">
+    Automate backups with cron or systemd
+  </Card>
+  <Card title="Exclude Patterns" icon="filter" href="/guides/exclude-patterns">
+    Master exclude pattern syntax
+  </Card>
+</CardGroup>

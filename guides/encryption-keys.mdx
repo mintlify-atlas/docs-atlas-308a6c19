@@ -1,0 +1,427 @@
+---
+title: "Managing Encryption Keys"
+description: "How to manage encryption passwords, platform keys, recovery keys, and key slots in Cloudstic"
+---
+
+Cloudstic uses AES-256-GCM encryption by default. This guide explains how to manage encryption credentials, add recovery keys, change passwords, and understand the key slot system.
+
+## Understanding Cloudstic Encryption
+
+Cloudstic's encryption model:
+
+- A random 32-byte **master key** is generated during `cloudstic init`
+- The master key encrypts all backup data
+- The master key itself is wrapped into one or more **key slots**
+- Each slot is unlocked with different credentials (password, platform key, KMS key, or recovery phrase)
+- All slots unlock the **same** master key
+
+<Note>
+  Think of key slots like multiple keys to the same safe. You can unlock your backups with any valid credential.
+</Note>
+
+## Key Slot Types
+
+| Slot Type | Credential | Use Case |
+|-----------|-----------|----------|
+| `password` | User password (passphrase) | Day-to-day access, interactive use |
+| `platform` | 64-character hex key | Automation, CI/CD, non-interactive scripts |
+| `kms-platform` | AWS KMS key ARN | HSM-backed enterprise encryption |
+| `recovery` | 24-word BIP39 mnemonic | Emergency access when password is lost |
+
+## Creating a Repository with Encryption
+
+### Password-Based Encryption
+
+Most common for personal use:
+
+```bash
+cloudstic init -encryption-password "your strong passphrase"
+```
+
+<Tip>
+  Use a strong, unique passphrase. Consider using a passphrase manager like 1Password, Bitwarden, or LastPass.
+</Tip>
+
+### Password + Recovery Key (Recommended)
+
+Add a recovery key during initialization:
+
+```bash
+cloudstic init -encryption-password "your passphrase" -recovery
+```
+
+Output:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║                      RECOVERY KEY                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  abandon ability able about above absent absorb abstract ... ║
+║                                                              ║
+║  Write down these 24 words and store them in a safe place.   ║
+║  This is the ONLY time the recovery key will be displayed.   ║
+║  If you lose your password, this key is your only way to     ║
+║  recover your encrypted backups.                             ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+Repository initialized (encrypted: true).
+```
+
+<Warning>
+  **Write down your recovery key immediately!** It will only be displayed once. Store it in a safe, offline location (physical safe, safety deposit box, etc.).
+</Warning>
+
+### Platform Key for Automation
+
+Use a raw encryption key for non-interactive systems:
+
+```bash
+# Generate a random 32-byte key (64 hex characters)
+export CLOUDSTIC_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# Initialize repository
+cloudstic init -encryption-key $CLOUDSTIC_ENCRYPTION_KEY
+
+# Store the key securely (e.g., in a secrets manager)
+echo $CLOUDSTIC_ENCRYPTION_KEY | vault kv put secret/backups key=-
+```
+
+<Note>
+  Platform keys are intended for automation where password prompts aren't possible. Store them in a secrets manager (HashiCorp Vault, AWS Secrets Manager, etc.).
+</Note>
+
+### Dual Access (Password + Platform Key)
+
+Create a repository with both types of access:
+
+```bash
+cloudstic init \
+  -encryption-password "your passphrase" \
+  -encryption-key $(openssl rand -hex 32)
+```
+
+Now you can unlock the repository with either credential.
+
+## Listing Key Slots
+
+View all key slots in a repository:
+
+```bash
+cloudstic key list
+```
+
+Output:
+
+```
++──────────────+─────────+──────────+
+| Type         | Label   | KDF      |
++──────────────+─────────+──────────+
+| password     | default | argon2id |
+| recovery     | default | —        |
++──────────────+─────────+──────────+
+
+2 key slot(s) found.
+```
+
+<Note>
+  `key list` does **not** require authentication — slot metadata is stored unencrypted.
+</Note>
+
+## Adding a Recovery Key
+
+Add a recovery key to an existing repository:
+
+```bash
+cloudstic key add-recovery -encryption-password "your passphrase"
+```
+
+Output:
+
+```
+╔══════════════════════════════════════════════════════════════╗
+║                      RECOVERY KEY                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  abandon ability able about above absent absorb abstract ... ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+Recovery key slot has been added to the repository.
+```
+
+<Warning>
+  This is the **only time** the recovery key is displayed. Write it down and store it securely.
+</Warning>
+
+If you're using a platform key instead of a password:
+
+```bash
+cloudstic key add-recovery -encryption-key <your-hex-key>
+```
+
+For KMS-managed repositories:
+
+```bash
+cloudstic key add-recovery -kms-key-arn arn:aws:kms:us-east-1:123456:key/abc-123
+```
+
+## Changing Your Password
+
+Update the password slot:
+
+```bash
+cloudstic key passwd
+```
+
+You'll be prompted for:
+1. Current password (or provide via `-encryption-password`)
+2. New password (or provide via `-new-password`)
+3. Confirmation of new password
+
+Non-interactive example:
+
+```bash
+cloudstic key passwd \
+  -encryption-password "old passphrase" \
+  -new-password "new passphrase"
+```
+
+<Tip>
+  If you're unlocking with a platform key or KMS key, you can use those to set a new password:
+  ```bash
+  cloudstic key passwd -encryption-key <hex-key> -new-password "new passphrase"
+  ```
+</Tip>
+
+## Using Recovery Keys to Access Backups
+
+If you've lost your password, use your recovery key:
+
+```bash
+cloudstic list -recovery-key "word1 word2 word3 ... word24"
+```
+
+Or set it as an environment variable:
+
+```bash
+export CLOUDSTIC_RECOVERY_KEY="word1 word2 word3 ... word24"
+cloudstic list
+cloudstic restore
+```
+
+Once you've regained access, set a new password:
+
+```bash
+cloudstic key passwd -recovery-key "word1 word2 ... word24" -new-password "new passphrase"
+```
+
+## Environment Variables for Credentials
+
+Avoid typing credentials repeatedly:
+
+```bash
+# For password-based access
+export CLOUDSTIC_ENCRYPTION_PASSWORD="your passphrase"
+
+# For platform key access
+export CLOUDSTIC_ENCRYPTION_KEY="64-character-hex-key"
+
+# For recovery key access
+export CLOUDSTIC_RECOVERY_KEY="word1 word2 ... word24"
+
+# For KMS access
+export CLOUDSTIC_KMS_KEY_ARN="arn:aws:kms:us-east-1:123456:key/abc-123"
+```
+
+Add to your shell profile (`~/.bashrc`, `~/.zshrc`) for persistence:
+
+```bash
+echo 'export CLOUDSTIC_ENCRYPTION_PASSWORD="your passphrase"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+<Warning>
+  **Security consideration:** Only store credentials in environment variables on trusted, single-user systems. For shared systems, enter passwords interactively.
+</Warning>
+
+## Interactive Password Prompts
+
+If no credential is provided, Cloudstic will prompt interactively:
+
+```bash
+$ cloudstic restore
+Repository password: [hidden input]
+```
+
+This is the most secure option for personal use.
+
+## Advanced: AWS KMS Integration
+
+For enterprise deployments, use AWS KMS to manage encryption keys:
+
+<Steps>
+  <Step title="Create a KMS key">
+    ```bash
+    aws kms create-key --description "Cloudstic backup encryption"
+    ```
+
+    Note the `KeyId` from the output.
+  </Step>
+
+  <Step title="Initialize repository with KMS">
+    ```bash
+    cloudstic init -kms-key-arn arn:aws:kms:us-east-1:123456:key/abc-123
+    ```
+  </Step>
+
+  <Step title="Use KMS for all operations">
+    ```bash
+    export CLOUDSTIC_KMS_KEY_ARN="arn:aws:kms:us-east-1:123456:key/abc-123"
+    cloudstic backup -source local -source-path ~/Documents
+    cloudstic restore
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  KMS integration requires AWS credentials with `kms:Decrypt` and `kms:GenerateDataKey` permissions.
+</Note>
+
+## Security Best Practices
+
+<Steps>
+  <Step title="Use strong, unique passphrases">
+    - At least 20 characters
+    - Mix of words, numbers, and symbols
+    - Not reused from other services
+    - Consider using a passphrase generator
+  </Step>
+
+  <Step title="Always create a recovery key">
+    ```bash
+    cloudstic init -encryption-password "passphrase" -recovery
+    ```
+  </Step>
+
+  <Step title="Store recovery keys offline">
+    - Write on paper, store in a safe
+    - Use a safety deposit box
+    - Split across multiple secure locations
+    - **Never** store digitally alongside backups
+  </Step>
+
+  <Step title="Test recovery key access">
+    Verify your recovery key works:
+    ```bash
+    cloudstic list -recovery-key "word1 word2 ... word24"
+    ```
+  </Step>
+
+  <Step title="Rotate passwords periodically">
+    ```bash
+    cloudstic key passwd
+    ```
+    Recommended: every 6-12 months
+  </Step>
+
+  <Step title="Use KMS for production systems">
+    Leverage hardware security modules for enterprise deployments:
+    ```bash
+    cloudstic init -kms-key-arn arn:aws:kms:...
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### "Could not open key slots" Error
+
+Your password or key is incorrect. Verify:
+
+```bash
+# Check environment variable
+echo $CLOUDSTIC_ENCRYPTION_PASSWORD
+
+# Try recovery key
+cloudstic list -recovery-key "word1 word2 ... word24"
+```
+
+### "Repository not encrypted" Message
+
+The repository was created with `-no-encryption`. Key management commands don't apply to unencrypted repositories.
+
+### Lost Password and Recovery Key
+
+**There is no recovery option if both are lost.** Your backups are permanently inaccessible. This is by design — encryption without a backdoor.
+
+Preventive measures:
+- Always create a recovery key (`-recovery`)
+- Store recovery key in multiple secure locations
+- Document your encryption setup
+
+### Changing Password Doesn't Work
+
+Ensure you're providing the correct current credentials:
+
+```bash
+# Unlock with current password
+cloudstic key passwd -encryption-password "current passphrase"
+
+# Or with platform key
+cloudstic key passwd -encryption-key <current-hex-key>
+
+# Or with recovery key
+cloudstic key passwd -recovery-key "word1 word2 ... word24"
+```
+
+## Recovery Key Format
+
+Recovery keys use the BIP39 mnemonic standard:
+
+- 24 words from a standardized word list
+- Each word encodes ~11 bits of entropy
+- Total: 256 bits of entropy (same as the master key)
+- Words are lowercase, space-separated
+- Order matters
+
+**Example (do not use this):**
+```
+abandon ability able about above absent absorb abstract absurd abuse access accident
+account accuse achieve acid acoustic acquire across act action actor actress actual
+```
+
+## Unencrypted Repositories
+
+You can create an unencrypted repository (not recommended):
+
+```bash
+cloudstic init -no-encryption
+```
+
+<Warning>
+  **Unencrypted repositories are not recommended.** Your backup data is stored in plaintext and can be read by anyone with storage access.
+</Warning>
+
+Use cases for unencrypted repositories:
+- Testing and development
+- Backups of already-encrypted data
+- Air-gapped systems with physical security
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="First Backup" icon="cloud-arrow-up" href="/guides/first-backup">
+    Create your first encrypted backup
+  </Card>
+  <Card title="Restoring Files" icon="arrow-rotate-left" href="/guides/restoring-files">
+    Use your encryption key to restore backups
+  </Card>
+  <Card title="Automation" icon="robot" href="/guides/automation">
+    Automate backups with platform keys
+  </Card>
+  <Card title="Check Command" icon="check" href="/commands/check">
+    Verify encrypted data integrity
+  </Card>
+</CardGroup>

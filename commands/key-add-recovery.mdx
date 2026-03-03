@@ -1,0 +1,270 @@
+---
+title: "cloudstic key add-recovery"
+description: "Generate a 24-word recovery key for an encrypted repository"
+---
+
+## Overview
+
+The `cloudstic key add-recovery` command generates a BIP39 24-word mnemonic recovery key for an existing encrypted repository. This recovery key provides a human-readable backup method to unlock your repository if you lose your primary password or platform key.
+
+## Usage
+
+```bash
+cloudstic key add-recovery [options]
+```
+
+## Description
+
+A recovery key is a 24-word seed phrase (BIP39 mnemonic) that encodes a 32-byte cryptographic key. This key is used to wrap your repository's master encryption key in a new "recovery" key slot.
+
+**Why use a recovery key?**
+
+- **Password backup** — If you forget your password, the recovery key provides an alternative unlock method
+- **Disaster recovery** — Store the recovery key offline (printed, engraved, etc.) for long-term backup
+- **Access delegation** — Share repository access without revealing your primary password
+- **Migration** — Simplifies moving access between systems or team members
+
+<Warning>
+  The recovery key is displayed **only once** when generated. Write it down and store it securely. If you lose both your password and recovery key, your encrypted backups are **permanently inaccessible**.
+</Warning>
+
+## Prerequisites
+
+To add a recovery key, you must **already have access** to the repository using one of:
+
+- `-encryption-password` — Your current repository password
+- `-encryption-key` — Your platform key (64 hex characters)
+- `-kms-key-arn` — AWS KMS key ARN (for KMS-encrypted repositories)
+
+The command uses your current credentials to unlock the master key, then wraps it with the newly generated recovery key.
+
+## Flags
+
+
+<ParamField path="-encryption-password" type="string" required>
+  Current repository password (required to unlock the master key). Can also be set via `CLOUDSTIC_ENCRYPTION_PASSWORD` environment variable.
+</ParamField>
+
+<ParamField path="-encryption-key" type="string">
+  Platform key as 64 hex characters (alternative to password). Can also be set via `CLOUDSTIC_ENCRYPTION_KEY` environment variable.
+</ParamField>
+
+<ParamField path="-kms-key-arn" type="string">
+  AWS KMS key ARN for unlocking KMS-encrypted repositories. Can also be set via `CLOUDSTIC_KMS_KEY_ARN` environment variable.
+</ParamField>
+
+## Examples
+
+### Add recovery key using password authentication
+
+```bash
+cloudstic key add-recovery -encryption-password "my secret passphrase"
+```
+
+Output:
+```
+╔══════════════════════════════════════════════════════════════╗
+║                      RECOVERY KEY                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  word1 word2 word3 word4 word5 word6 word7 word8 word9
+║  word10 word11 word12 word13 word14 word15 word16 word17
+║  word18 word19 word20 word21 word22 word23 word24           ║
+║                                                              ║
+║  Write down these 24 words and store them in a safe place.   ║
+║  This is the ONLY time the recovery key will be displayed.   ║
+║  If you lose your password, this key is your only way to     ║
+║  recover your encrypted backups.                             ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+Recovery key slot has been added to the repository.
+```
+
+### Add recovery key using environment variable
+
+```bash
+export CLOUDSTIC_ENCRYPTION_PASSWORD="my secret passphrase"
+cloudstic key add-recovery
+```
+
+### Add recovery key with platform key
+
+```bash
+cloudstic key add-recovery -encryption-key "a1b2c3d4e5f6..." \
+  -store b2 -store-path my-backup-bucket
+```
+
+### Add recovery key for KMS-encrypted repository
+
+```bash
+cloudstic key add-recovery -kms-key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def" \
+  -store s3 -store-path my-s3-bucket
+```
+
+## Recovery Key Format
+
+The recovery key is a BIP39 mnemonic consisting of 24 words from the standard BIP39 English wordlist. The words encode 256 bits of entropy (32 bytes) plus an 8-bit checksum.
+
+Example recovery key:
+```
+abstract acquire across action adjust admit adult advance advice aerobic
+afford agree ahead aim air airport aisle album alcohol alert alien
+all alley allow almost alone alpha already
+```
+
+<Note>
+  The recovery key uses the same BIP39 standard as cryptocurrency wallets, but **does not derive keys using BIP32/BIP44**. It directly encodes a 32-byte wrapping key.
+</Note>
+
+## Storing Your Recovery Key
+
+### Best Practices
+
+1. **Write it down immediately** — The key is displayed only once and never stored
+2. **Verify the words** — Double-check spelling and order before storing
+3. **Use physical storage** — Paper, metal plates, or engraved media (not digital)
+4. **Multiple copies** — Store in 2-3 geographically separated locations
+5. **Consider splitting** — Use Shamir's Secret Sharing for critical data
+6. **Protect from fire/water** — Use fireproof/waterproof containers
+7. **Test recovery** — Verify you can unlock the repository with the recovery key
+
+### Storage Ideas
+
+- **Home safe** — Fireproof/waterproof safe or lockbox
+- **Bank safety deposit box** — Offsite secure storage
+- **Trusted family member** — Sealed envelope with instructions
+- **Metal plate** — Engraved or stamped for durability
+- **Cryptosteel/Billfodl** — Purpose-built metal backup solutions
+
+<Warning>
+  **Do NOT store the recovery key digitally** (cloud storage, password managers, encrypted files). If an attacker compromises your digital systems, they could access your backups. The recovery key is designed for **offline, physical storage**.
+</Warning>
+
+## Using the Recovery Key
+
+To unlock a repository with your recovery key:
+
+```bash
+cloudstic list -recovery-key "word1 word2 word3 ... word24"
+```
+
+Or via environment variable:
+
+```bash
+export CLOUDSTIC_RECOVERY_KEY="word1 word2 word3 ... word24"
+cloudstic list
+```
+
+The recovery key works for **all operations** (backup, restore, list, etc.) — it's a complete alternative to your password.
+
+## Multiple Recovery Keys
+
+Currently, Cloudstic supports **one recovery key slot** per repository (label: "default"). Running `key add-recovery` multiple times will **overwrite** the previous recovery key slot.
+
+<Warning>
+  If you run `key add-recovery` again, the **old recovery key will stop working**. The previous 24-word phrase will no longer unlock your repository. Only the most recently generated recovery key is valid.
+</Warning>
+
+To maintain multiple recovery methods, use different credential types (password + recovery + platform key).
+
+## Error Messages
+
+### Repository not initialized
+```
+Repository not initialized -- run 'cloudstic init' first.
+```
+**Solution:** Initialize the repository with `cloudstic init` before adding keys.
+
+### Repository is not encrypted
+```
+Repository is not encrypted -- recovery keys are only for encrypted repositories.
+```
+**Solution:** Recovery keys only work with encrypted repositories. Unencrypted repositories (created with `--no-encryption`) don't need key slots.
+
+### Failed to extract master key
+```
+Failed to extract master key: no provided credential matches
+```
+**Solution:** Provide valid credentials via `-encryption-password`, `-encryption-key`, or `-kms-key-arn`. Your credentials must match an existing key slot.
+
+### Missing credentials
+```
+Provide --encryption-key, --encryption-password, or --kms-key-arn to unlock the master key.
+```
+**Solution:** You must provide at least one credential to unlock the repository before adding a recovery key.
+
+## Security Considerations
+
+### Threat Model
+
+- **Recovery key is equivalent to your password** — Anyone with the 24 words can decrypt all your backups
+- **Physical security matters** — The key should be protected like cash or jewelry
+- **Social engineering risk** — Never share the key via phone, email, or messaging apps
+- **Inheritance planning** — Store instructions with the key for trusted individuals
+
+### When to Generate a Recovery Key
+
+✅ **Good use cases:**
+- Long-term personal backups where password loss is a concern
+- Disaster recovery scenarios (house fire, computer theft, etc.)
+- Compliance requirements for offline key escrow
+- Shared access scenarios (family, team, organization)
+
+❌ **Avoid if:**
+- You can't secure physical storage (risk of theft/exposure)
+- You only need short-term backups (recovery key is overkill)
+- Your threat model requires defense against physical compromise
+
+## Global Options
+
+
+- `-store`, `-store-path`, `-store-prefix` — Specify repository location
+- `-s3-*`, `-sftp-*` — Storage backend configuration
+- `-debug` — Log detailed operations
+
+## Related Commands
+
+- [`cloudstic init`](/commands/init) — Initialize repository with `-recovery` flag to generate recovery key during setup
+- [`cloudstic key list`](/commands/key-list) — Verify recovery key slot was added
+- [`cloudstic key passwd`](/commands/key-passwd) — Change repository password (recovery key remains valid)
+- [`cloudstic restore`](/commands/restore) — Restore backups using recovery key
+
+## Technical Details
+
+### Key Generation Process
+
+1. Generate 256 bits (32 bytes) of cryptographic entropy via `crypto/rand`
+2. Encode entropy as BIP39 mnemonic using standard wordlist
+3. Unlock repository master key using provided credentials
+4. Wrap master key with BIP39-derived key using AES-256-GCM
+5. Store wrapped key in `keys/recovery-default` slot
+6. Display mnemonic to user (this is the **only** time it's shown)
+
+### BIP39 Implementation
+
+Cloudstic uses the standard BIP39 English wordlist (2048 words). The 24-word mnemonic encodes:
+- **256 bits** of entropy
+- **8-bit checksum** (derived from SHA256 of entropy)
+
+The mnemonic is converted back to a 32-byte key when unlocking the repository. No BIP32 hierarchical derivation is used.
+
+### Storage Location
+
+The recovery key slot is stored as JSON at `keys/recovery-default`:
+
+```json
+{
+  "slot_type": "recovery",
+  "wrapped_key": "<base64-encoded wrapped master key>",
+  "label": "default"
+}
+```
+
+Note: `kdf_params` is omitted because BIP39 doesn't require parameters (the wordlist and algorithm are standardized).
+
+## Legacy Command
+
+<Note>
+  The standalone `cloudstic add-recovery-key` command is deprecated. Use `cloudstic key add-recovery` instead. The old command still works but prints a deprecation notice.
+</Note>

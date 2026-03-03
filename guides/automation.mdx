@@ -1,0 +1,675 @@
+---
+title: "Automating Backups"
+description: "Schedule automatic backups with cron, systemd timers, and CI/CD pipelines"
+---
+
+This guide shows you how to automate Cloudstic backups using cron jobs, systemd timers, and other scheduling tools.
+
+## Why Automate Backups?
+
+Manual backups are unreliable. Automation ensures:
+
+- **Consistency** — Backups run on schedule, even when you forget
+- **Versioning** — Multiple snapshots over time for point-in-time recovery
+- **Disaster recovery** — Recent backups are always available
+- **Peace of mind** — Set it and forget it
+
+<Note>
+  Test your automation thoroughly before relying on it. Verify backups are created and restorable.
+</Note>
+
+## Prerequisites
+
+Before automating:
+
+1. **Initialize your repository**
+   ```bash
+   cloudstic init -encryption-password "your passphrase" -recovery
+   ```
+
+2. **Test manual backup**
+   ```bash
+   cloudstic backup -source local -source-path ~/Documents
+   ```
+
+3. **Test manual restore**
+   ```bash
+   cloudstic restore -output test-restore.zip
+   ```
+
+## Setting Up Environment Variables
+
+Store credentials in environment variables to avoid typing them repeatedly.
+
+### Create a Configuration File
+
+```bash ~/.cloudstic_env
+#!/bin/bash
+# Cloudstic configuration
+
+# Storage backend
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-backup-bucket
+export CLOUDSTIC_STORE_PREFIX=laptop/
+
+# AWS credentials (for S3)
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+export CLOUDSTIC_S3_REGION=us-east-1
+
+# Encryption (choose one)
+export CLOUDSTIC_ENCRYPTION_PASSWORD="your passphrase"
+# OR for automation:
+# export CLOUDSTIC_ENCRYPTION_KEY="64-character-hex-key"
+
+# Source configuration
+export CLOUDSTIC_SOURCE=local
+export CLOUDSTIC_SOURCE_PATH="$HOME/Documents"
+```
+
+Secure the file:
+
+```bash
+chmod 600 ~/.cloudstic_env
+```
+
+<Warning>
+  Never commit this file to version control. Add it to `.gitignore` if your home directory is tracked.
+</Warning>
+
+### Load Configuration
+
+In your backup scripts:
+
+```bash
+#!/bin/bash
+source ~/.cloudstic_env
+cloudstic backup -source "$CLOUDSTIC_SOURCE" -source-path "$CLOUDSTIC_SOURCE_PATH"
+```
+
+## Automation with Cron (Linux/macOS)
+
+Cron is the standard Unix job scheduler.
+
+### Basic Cron Job
+
+<Steps>
+  <Step title="Create a backup script">
+    Create `~/bin/backup.sh`:
+
+    ```bash
+    #!/bin/bash
+    set -euo pipefail
+
+    # Load configuration
+    source ~/.cloudstic_env
+
+    # Log file
+    LOG_FILE="$HOME/logs/backup.log"
+    mkdir -p "$(dirname "$LOG_FILE")"
+
+    # Run backup
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting backup" >> "$LOG_FILE"
+    cloudstic backup -source local -source-path ~/Documents >> "$LOG_FILE" 2>&1
+
+    if [ $? -eq 0 ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup successful" >> "$LOG_FILE"
+    else
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backup failed" >> "$LOG_FILE"
+      exit 1
+    fi
+    ```
+
+    Make it executable:
+
+    ```bash
+    chmod +x ~/bin/backup.sh
+    ```
+  </Step>
+
+  <Step title="Test the script">
+    Run manually to verify:
+
+    ```bash
+    ~/bin/backup.sh
+    cat ~/logs/backup.log
+    ```
+  </Step>
+
+  <Step title="Add to crontab">
+    Edit your crontab:
+
+    ```bash
+    crontab -e
+    ```
+
+    Add a cron entry:
+
+    ```cron
+    # Run backup daily at 2 AM
+    0 2 * * * /home/user/bin/backup.sh
+
+    # Run backup every 6 hours
+    0 */6 * * * /home/user/bin/backup.sh
+
+    # Run backup Monday-Friday at 6 PM
+    0 18 * * 1-5 /home/user/bin/backup.sh
+    ```
+
+    <Tip>
+      Use absolute paths in cron jobs. Avoid `~` or relative paths.
+    </Tip>
+  </Step>
+
+  <Step title="Verify cron setup">
+    List your cron jobs:
+
+    ```bash
+    crontab -l
+    ```
+
+    Wait for the scheduled time and check logs:
+
+    ```bash
+    tail -f ~/logs/backup.log
+    ```
+  </Step>
+</Steps>
+
+### Cron Schedule Examples
+
+| Schedule | Cron Expression | Description |
+|----------|----------------|-------------|
+| Daily at 2 AM | `0 2 * * *` | Once per day |
+| Every 6 hours | `0 */6 * * *` | Four times daily |
+| Weekdays at 6 PM | `0 18 * * 1-5` | Monday-Friday |
+| Sundays at noon | `0 12 * * 0` | Weekly |
+| First of month | `0 3 1 * *` | Monthly |
+
+<Tip>
+  Use [crontab.guru](https://crontab.guru) to test cron expressions.
+</Tip>
+
+## Automation with Systemd (Linux)
+
+Systemd timers are a modern alternative to cron.
+
+### Create a Systemd Service
+
+<Steps>
+  <Step title="Create service file">
+    Create `~/.config/systemd/user/cloudstic-backup.service`:
+
+    ```ini
+    [Unit]
+    Description=Cloudstic backup service
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=oneshot
+    EnvironmentFile=%h/.cloudstic_env
+    ExecStart=/usr/local/bin/cloudstic backup -source local -source-path %h/Documents
+    StandardOutput=append:%h/logs/backup.log
+    StandardError=append:%h/logs/backup.log
+
+    [Install]
+    WantedBy=default.target
+    ```
+  </Step>
+
+  <Step title="Create timer file">
+    Create `~/.config/systemd/user/cloudstic-backup.timer`:
+
+    ```ini
+    [Unit]
+    Description=Cloudstic backup timer
+    Requires=cloudstic-backup.service
+
+    [Timer]
+    OnCalendar=daily
+    OnCalendar=02:00
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    ```
+
+    <Tip>
+      `Persistent=true` ensures missed runs execute on next boot.
+    </Tip>
+  </Step>
+
+  <Step title="Enable and start the timer">
+    ```bash
+    # Reload systemd configuration
+    systemctl --user daemon-reload
+
+    # Enable timer (start on boot)
+    systemctl --user enable cloudstic-backup.timer
+
+    # Start timer now
+    systemctl --user start cloudstic-backup.timer
+    ```
+  </Step>
+
+  <Step title="Verify timer status">
+    ```bash
+    # Check timer status
+    systemctl --user status cloudstic-backup.timer
+
+    # List all timers
+    systemctl --user list-timers
+
+    # View logs
+    journalctl --user -u cloudstic-backup.service -f
+    ```
+  </Step>
+
+  <Step title="Test the service manually">
+    Trigger a backup immediately:
+
+    ```bash
+    systemctl --user start cloudstic-backup.service
+    ```
+  </Step>
+</Steps>
+
+### Systemd Timer Schedule Examples
+
+```ini
+# Daily at 2 AM
+OnCalendar=daily
+OnCalendar=02:00
+
+# Every 6 hours
+OnCalendar=*-*-* 00,06,12,18:00:00
+
+# Weekdays at 6 PM
+OnCalendar=Mon..Fri 18:00
+
+# Weekly on Sunday
+OnCalendar=Sun *-*-* 12:00:00
+
+# Monthly on the 1st
+OnCalendar=*-*-01 03:00:00
+```
+
+## Advanced Backup Script
+
+A production-ready script with logging, error handling, and retention:
+
+```bash ~/bin/cloudstic-backup.sh
+#!/bin/bash
+set -euo pipefail
+
+# Configuration
+source ~/.cloudstic_env
+LOG_DIR="$HOME/logs"
+LOG_FILE="$LOG_DIR/backup-$(date +%Y%m%d).log"
+mkdir -p "$LOG_DIR"
+
+# Logging function
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+log "======================================"
+log "Starting Cloudstic backup"
+
+# Check connectivity (for remote backends)
+if ! ping -c 1 8.8.8.8 > /dev/null 2>&1; then
+  log "ERROR: No network connectivity"
+  exit 1
+fi
+
+# Run backup
+log "Backing up: $CLOUDSTIC_SOURCE_PATH"
+if cloudstic backup \
+  -source "$CLOUDSTIC_SOURCE" \
+  -source-path "$CLOUDSTIC_SOURCE_PATH" \
+  -tag automated \
+  >> "$LOG_FILE" 2>&1; then
+  log "Backup completed successfully"
+else
+  log "ERROR: Backup failed with exit code $?"
+  exit 1
+fi
+
+# Apply retention policy
+log "Applying retention policy"
+if cloudstic forget \
+  -keep-last 7 \
+  -keep-daily 30 \
+  -keep-weekly 8 \
+  -keep-monthly 12 \
+  -prune \
+  >> "$LOG_FILE" 2>&1; then
+  log "Retention policy applied successfully"
+else
+  log "WARNING: Retention policy failed with exit code $?"
+fi
+
+# Weekly integrity check (on Sundays)
+if [ "$(date +%u)" = "7" ]; then
+  log "Running weekly integrity check"
+  if cloudstic check >> "$LOG_FILE" 2>&1; then
+    log "Integrity check passed"
+  else
+    log "ERROR: Integrity check failed"
+    exit 1
+  fi
+fi
+
+log "Cloudstic backup completed"
+log "======================================"
+
+# Rotate old logs (keep last 30 days)
+find "$LOG_DIR" -name "backup-*.log" -mtime +30 -delete
+```
+
+Make it executable:
+
+```bash
+chmod +x ~/bin/cloudstic-backup.sh
+```
+
+## Monitoring and Alerting
+
+### Email Notifications on Failure
+
+Send email when backups fail:
+
+```bash ~/bin/backup-with-email.sh
+#!/bin/bash
+source ~/.cloudstic_env
+LOG_FILE="$HOME/logs/backup.log"
+
+if ! cloudstic backup -source local -source-path ~/Documents >> "$LOG_FILE" 2>&1; then
+  echo "Cloudstic backup failed. See attached log." | \
+    mail -s "Backup Failure on $(hostname)" \
+         -a "$LOG_FILE" \
+         you@example.com
+  exit 1
+fi
+```
+
+<Note>
+  Install `mailutils` or `sendmail` for the `mail` command:
+  ```bash
+  sudo apt install mailutils  # Debian/Ubuntu
+  sudo yum install mailx      # RHEL/CentOS
+  brew install mailutils      # macOS
+  ```
+</Note>
+
+### Health Check Pings
+
+Use [Healthchecks.io](https://healthchecks.io) or similar services:
+
+```bash
+#!/bin/bash
+source ~/.cloudstic_env
+HEALTHCHECK_URL="https://hc-ping.com/your-uuid"
+
+# Start ping
+curl -fsS --retry 3 "$HEALTHCHECK_URL/start" > /dev/null
+
+# Run backup
+if cloudstic backup -source local -source-path ~/Documents; then
+  # Success ping
+  curl -fsS --retry 3 "$HEALTHCHECK_URL" > /dev/null
+else
+  # Failure ping
+  curl -fsS --retry 3 "$HEALTHCHECK_URL/fail" > /dev/null
+  exit 1
+fi
+```
+
+## Cloud-Specific Automation
+
+### AWS Lambda Backup
+
+Run backups from Lambda (e.g., backing up EFS to S3):
+
+```python lambda_function.py
+import os
+import subprocess
+
+def lambda_handler(event, context):
+    os.environ['CLOUDSTIC_STORE'] = 's3'
+    os.environ['CLOUDSTIC_STORE_PATH'] = 'my-backup-bucket'
+    os.environ['CLOUDSTIC_ENCRYPTION_KEY'] = os.environ['ENCRYPTION_KEY']  # from env var
+    
+    result = subprocess.run([
+        '/opt/cloudstic',
+        'backup',
+        '-source', 'local',
+        '-source-path', '/mnt/efs'
+    ], capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        raise Exception(f"Backup failed: {result.stderr}")
+    
+    return {
+        'statusCode': 200,
+        'body': result.stdout
+    }
+```
+
+Package Cloudstic in a Lambda layer and schedule with EventBridge.
+
+### GitHub Actions Backup
+
+Back up repositories to S3:
+
+```yaml .github/workflows/backup.yml
+name: Backup Repository
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Cloudstic
+        run: |
+          wget https://github.com/cloudstic/cli/releases/latest/download/cloudstic_linux_amd64.tar.gz
+          tar xzf cloudstic_linux_amd64.tar.gz
+          sudo mv cloudstic /usr/local/bin/
+
+      - name: Run backup
+        env:
+          CLOUDSTIC_STORE: s3
+          CLOUDSTIC_STORE_PATH: my-backup-bucket
+          CLOUDSTIC_ENCRYPTION_KEY: ${{ secrets.ENCRYPTION_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          cloudstic backup -source local -source-path .
+```
+
+## Backing Up Cloud Sources
+
+### Google Drive Automated Backup
+
+```bash ~/bin/backup-gdrive.sh
+#!/bin/bash
+source ~/.cloudstic_env
+
+# Back up Google Drive using incremental changes API
+cloudstic backup \
+  -source gdrive-changes \
+  -tag gdrive \
+  -tag automated
+
+# Apply retention
+cloudstic forget -keep-daily 30 -source gdrive -prune
+```
+
+### OneDrive Automated Backup
+
+```bash ~/bin/backup-onedrive.sh
+#!/bin/bash
+source ~/.cloudstic_env
+
+# Back up OneDrive
+cloudstic backup \
+  -source onedrive-changes \
+  -tag onedrive \
+  -tag automated
+
+# Apply retention
+cloudstic forget -keep-daily 30 -source onedrive -prune
+```
+
+<Note>
+  For cloud sources, the first backup is slow (full scan). Subsequent backups use change APIs and are much faster.
+</Note>
+
+## Troubleshooting Automated Backups
+
+### Cron Job Doesn't Run
+
+1. **Check cron service is running:**
+   ```bash
+   sudo systemctl status cron  # Debian/Ubuntu
+   sudo systemctl status crond # RHEL/CentOS
+   ```
+
+2. **Verify crontab syntax:**
+   ```bash
+   crontab -l
+   ```
+
+3. **Check system logs:**
+   ```bash
+   grep CRON /var/log/syslog
+   ```
+
+4. **Test script manually:**
+   ```bash
+   bash -x ~/bin/backup.sh
+   ```
+
+### Environment Variables Not Loaded
+
+Cron has a minimal environment. Always source your config file:
+
+```bash
+#!/bin/bash
+source ~/.cloudstic_env  # Must be first
+cloudstic backup ...
+```
+
+Or set variables directly in the script:
+
+```bash
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-bucket
+```
+
+### Backup Fails Silently
+
+Redirect output to a log file:
+
+```cron
+0 2 * * * /home/user/bin/backup.sh >> /home/user/logs/backup.log 2>&1
+```
+
+Or use systemd with `StandardOutput` and `StandardError`.
+
+### "Repository locked" Error
+
+A previous backup may still be running or crashed without releasing the lock.
+
+```bash
+# Check if backup is running
+ps aux | grep cloudstic
+
+# If no process, break the lock
+cloudstic break-lock
+```
+
+Prevent overlapping runs in your script:
+
+```bash
+#!/bin/bash
+LOCK_FILE="$HOME/.cloudstic-backup.lock"
+
+if [ -f "$LOCK_FILE" ]; then
+  echo "Backup already running (lock file exists)"
+  exit 1
+fi
+
+touch "$LOCK_FILE"
+trap "rm -f $LOCK_FILE" EXIT
+
+# Run backup
+cloudstic backup ...
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Test automation before relying on it">
+    Run manual backups and restores to verify the setup works.
+  </Step>
+
+  <Step title="Monitor backup success">
+    Use health check services or email alerts.
+  </Step>
+
+  <Step title="Rotate logs">
+    Delete old log files to save space:
+    ```bash
+    find ~/logs -name "*.log" -mtime +30 -delete
+    ```
+  </Step>
+
+  <Step title="Run periodic integrity checks">
+    Add weekly `cloudstic check` runs:
+    ```cron
+    0 3 * * 0 /usr/local/bin/cloudstic check >> ~/logs/check.log 2>&1
+    ```
+  </Step>
+
+  <Step title="Combine backup with retention">
+    Clean up old snapshots automatically:
+    ```bash
+    cloudstic backup ...
+    cloudstic forget -keep-daily 30 -prune
+    ```
+  </Step>
+
+  <Step title="Document your setup">
+    Keep notes on:
+    - Backup schedule
+    - Retention policy
+    - Storage credentials location
+    - Recovery procedure
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Retention Policies" icon="clock" href="/guides/retention-policies">
+    Manage automated snapshot lifecycle
+  </Card>
+  <Card title="Encryption Keys" icon="key" href="/guides/encryption-keys">
+    Secure credentials for automated backups
+  </Card>
+  <Card title="Restoring Files" icon="arrow-rotate-left" href="/guides/restoring-files">
+    Test your automated backups
+  </Card>
+  <Card title="Check Command" icon="check" href="/commands/check">
+    Automate integrity verification
+  </Card>
+</CardGroup>

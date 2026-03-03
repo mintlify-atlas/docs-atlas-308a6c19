@@ -1,0 +1,173 @@
+---
+title: cloudstic list
+description: List all backup snapshots in the repository
+---
+
+List all backup snapshots in the repository with their creation times, source information, and tags.
+
+## Usage
+
+```bash
+cloudstic list [options]
+```
+
+No additional flags are required. The command displays a table of all snapshots sorted by creation time.
+
+## Options
+
+### Global Options
+
+
+
+- Storage backend configuration (`-store`, `-store-path`, etc.)
+- Encryption credentials (`-encryption-password`, `-encryption-key`, etc.)
+- Verbosity flags (`-verbose`, `-quiet`, `-debug`)
+
+<ParamField path="-verbose" type="boolean" default="false">
+  Enable verbose output with additional details about snapshot loading and catalog reconciliation.
+</ParamField>
+
+## Examples
+
+<CodeGroup>
+```bash Basic Usage
+cloudstic list
+```
+
+```bash With Verbose Output
+cloudstic list -verbose
+```
+
+```bash Remote S3 Repository
+cloudstic list -store s3 -store-path my-backup-bucket -s3-region us-west-2
+```
+
+```bash Encrypted Repository
+cloudstic list -encryption-password "my secret passphrase"
+```
+</CodeGroup>
+
+## Output
+
+The command displays a table with the following columns:
+
+```plaintext
+12 snapshots
+┌─────┬─────────────────────┬──────────────────────────────────┬─────────┬─────────────┬────────────────┬──────────┐
+│ Seq │ Created             │ Snapshot Hash                     │ Source  │ Account     │ Path           │ Tags     │
+├─────┼─────────────────────┼──────────────────────────────────┼─────────┼─────────────┼────────────────┼──────────┤
+│ 1   │ 2024-03-15 10:23:15 │ a3f8d2e1c4b5a6f9                 │ local   │             │ ./documents    │          │
+│ 2   │ 2024-03-15 14:45:32 │ b1e9c7d3f5a8b2d6                 │ gdrive  │ user@ex.com │                │ daily    │
+│ 3   │ 2024-03-16 08:12:47 │ c2f1a9e4d7b3c8f5                 │ local   │             │ ./documents    │ prod,v2  │
+└─────┴─────────────────────┴──────────────────────────────────┴─────────┴─────────────┴────────────────┴──────────┘
+```
+
+### Column Descriptions
+
+- **Seq** — Snapshot sequence number (increments with each backup)
+- **Created** — Timestamp when the snapshot was created (UTC)
+- **Snapshot Hash** — Unique identifier for the snapshot (SHA-256 hash, first 16 hex chars shown)
+- **Source** — Source type (local, gdrive, onedrive, sftp)
+- **Account** — Account identifier for cloud sources (email for Drive/OneDrive)
+- **Path** — Source path for local/SFTP sources
+- **Tags** — Comma-separated tags applied to the snapshot
+
+<Note>
+Snapshot hashes are displayed as short prefixes for readability. Use the full hash or short prefix with other commands like `cloudstic restore a3f8d2`.
+</Note>
+
+## Snapshot Identity
+
+Each snapshot is associated with a source identity consisting of:
+
+- **Source type** (local, gdrive, onedrive, sftp)
+- **Account** (for cloud sources)
+- **Path** (for local/SFTP sources)
+
+Cloudstic uses this identity to determine the previous snapshot for incremental backups. Snapshots from different source identities are independent.
+
+## Snapshot Catalog
+
+Cloudstic maintains a snapshot catalog (`index/snapshots`) that stores lightweight summaries of all snapshots. This allows the `list` command to display results quickly without fetching every individual snapshot object.
+
+The catalog automatically reconciles with the repository on load:
+
+- Missing snapshots found via `LIST snapshot/` are added to the catalog
+- Orphaned catalog entries (snapshot object deleted) are removed
+- Self-healing ensures the catalog stays in sync
+
+<Tip>
+If you suspect the catalog is out of sync (e.g., after manual object store manipulation), the next `list` operation will automatically reconcile and repair it.
+</Tip>
+
+## Filtering and Sorting
+
+The `list` command displays all snapshots sorted by creation time (oldest first). For more advanced filtering and snapshot management, use:
+
+- [cloudstic forget](/commands/forget) — Remove snapshots based on retention policies with filtering by tag, source, account, or path
+- [cloudstic diff](/commands/diff) — Compare two snapshots to see what changed
+
+## Performance
+
+The `list` command is fast because:
+
+- Reads from the snapshot catalog (single object fetch)
+- Does not load individual snapshot objects
+- Does not traverse HAMT trees or file metadata
+
+Typical performance: less than 1 second for repositories with thousands of snapshots.
+
+## Empty Repository
+
+If the repository has no snapshots yet:
+
+```plaintext
+0 snapshots
+┌─────┬─────────┬───────────────┬────────┬─────────┬──────┬──────┐
+│ Seq │ Created │ Snapshot Hash │ Source │ Account │ Path │ Tags │
+└─────┴─────────┴───────────────┴────────┴─────────┴──────┴──────┘
+```
+
+Run `cloudstic backup` to create your first snapshot.
+
+## Encryption
+
+If your repository is encrypted, you must provide valid credentials:
+
+```bash
+cloudstic list -encryption-password "my secret passphrase"
+```
+
+Or using environment variables:
+
+```bash
+export CLOUDSTIC_ENCRYPTION_PASSWORD="my secret passphrase"
+cloudstic list
+```
+
+Snapshot metadata is encrypted at rest. The `list` command decrypts the catalog and individual snapshot objects as needed.
+
+<Warning>
+Without valid encryption credentials, the command will fail with an authentication error.
+</Warning>
+
+## Machine-Readable Output
+
+For scripting and automation, consider using:
+
+- `cloudstic cat index/snapshots` — Display raw JSON snapshot catalog
+- `cloudstic cat index/latest` — Display the latest snapshot reference
+- `cloudstic cat snapshot/<hash>` — Display a specific snapshot's JSON
+
+Example:
+
+```bash
+cloudstic cat index/snapshots | jq '.snapshots[] | select(.tags | contains(["production"]))'
+```
+
+## See Also
+
+- [cloudstic ls](/commands/ls) — Browse files within a specific snapshot
+- [cloudstic backup](/commands/backup) — Create a new backup snapshot
+- [cloudstic restore](/commands/restore) — Restore files from a snapshot
+- [cloudstic forget](/commands/forget) — Remove snapshots based on retention policies

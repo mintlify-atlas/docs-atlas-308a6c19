@@ -1,0 +1,564 @@
+---
+title: "Go Client API"
+description: "Use Cloudstic programmatically in your Go applications"
+---
+
+The Cloudstic Go Client API provides a high-level interface for embedding backup functionality directly into your applications. All CLI operations are exposed as methods on the `Client` struct.
+
+## Installation
+
+```bash
+go get github.com/cloudstic/cli
+```
+
+## Quick Start
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	cloudstic "github.com/cloudstic/cli"
+	"github.com/cloudstic/cli/pkg/store"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Create a storage backend
+	baseStore, err := store.NewLocalStore("/path/to/repository")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create a client with encryption
+	client, err := cloudstic.NewClient(baseStore,
+		cloudstic.WithKeyProvider(cloudstic.Credentials{
+			Password: "my-secure-password",
+		}),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create a backup source
+	source, err := store.NewLocalSource("/path/to/data")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Run backup
+	result, err := client.Backup(ctx, source)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("Backup complete: %s\n", result.SnapshotID)
+	fmt.Printf("Files: %d total, %d added\n", result.TotalFiles, result.FilesAdded)
+	fmt.Printf("Size: %d bytes added\n", result.BytesAddedStored)
+}
+```
+
+## Client Creation
+
+### NewClient
+
+```go
+func NewClient(base store.ObjectStore, opts ...ClientOption) (*Client, error)
+```
+
+Creates a new Cloudstic client with the specified storage backend and options.
+
+**Parameters:**
+- `base` - The underlying `ObjectStore` implementation (S3, B2, local, etc.)
+- `opts` - Optional configuration via `ClientOption` functions
+
+### Client Options
+
+#### WithKeyProvider
+
+```go
+func WithKeyProvider(kp KeyProvider) ClientOption
+```
+
+Sets a `KeyProvider` for automatic key resolution. During `NewClient`, the repository config is read from the store. If the repository is encrypted, `ResolveKey` is called to obtain the encryption key. If the repository is not encrypted, the provider is silently ignored.
+
+```go
+client, err := cloudstic.NewClient(baseStore,
+	cloudstic.WithKeyProvider(cloudstic.Credentials{
+		Password: "my-password",
+	}),
+)
+```
+
+#### WithEncryptionKey
+
+```go
+func WithEncryptionKey(key []byte) ClientOption
+```
+
+Directly sets the AES-256-GCM encryption key (32 bytes). This bypasses repository config detection and unconditionally applies encryption. The HMAC deduplication key is automatically derived from this key.
+
+<Note>
+Use this for scenarios where the key is already resolved externally (e.g., SaaS products).
+</Note>
+
+```go
+key := []byte("...32-byte-encryption-key...") // Must be exactly 32 bytes
+client, err := cloudstic.NewClient(baseStore,
+	cloudstic.WithEncryptionKey(key),
+)
+```
+
+#### WithReporter
+
+```go
+func WithReporter(r Reporter) ClientOption
+```
+
+Sets the progress reporter for the client. By default, a no-op reporter is used.
+
+```go
+reporter := &MyCustomReporter{} // Implements ui.Reporter interface
+client, err := cloudstic.NewClient(baseStore,
+	cloudstic.WithReporter(reporter),
+)
+```
+
+#### WithPackfile
+
+```go
+func WithPackfile(enable bool) ClientOption
+```
+
+Enables or disables bundling small objects into 8MB packs to save API calls. Enabled by default.
+
+```go
+client, err := cloudstic.NewClient(baseStore,
+	cloudstic.WithPackfile(false), // Disable packfiles
+)
+```
+
+## Key Providers
+
+Key providers resolve the encryption key for a repository. They implement the `KeyProvider` interface:
+
+```go
+type KeyProvider interface {
+	ResolveKey(ctx context.Context, rawStore store.ObjectStore) ([]byte, error)
+}
+```
+
+### StaticKey
+
+```go
+type StaticKey []byte
+```
+
+A `KeyProvider` that returns a pre-resolved encryption key. Use this when the key has already been unwrapped externally.
+
+```go
+key := []byte("...32-byte-encryption-key...")
+client, err := cloudstic.NewClient(baseStore,
+	cloudstic.WithKeyProvider(cloudstic.StaticKey(key)),
+)
+```
+
+### Credentials
+
+```go
+type Credentials struct {
+	PlatformKey      []byte                 // Raw 32-byte platform key
+	Password         string                 // Password for password-based slots
+	RecoveryMnemonic string                 // BIP39 24-word recovery phrase
+	KMSDecrypter     crypto.KMSDecrypter    // For kms-platform slots (optional)
+	PasswordPrompt   func() (string, error) // Interactive password fallback (optional)
+}
+```
+
+Resolves the encryption key by trying credentials against the repository's stored key slots. The resolution order is:
+
+1. KMS (if `KMSDecrypter` provided)
+2. Platform key (if `PlatformKey` provided)
+3. Password (if `Password` provided)
+4. Recovery mnemonic (if `RecoveryMnemonic` provided)
+5. Password prompt (if `PasswordPrompt` provided and password slot exists)
+
+```go
+client, err := cloudstic.NewClient(baseStore,
+	cloudstic.WithKeyProvider(cloudstic.Credentials{
+		Password:         "my-password",
+		RecoveryMnemonic: "word1 word2 ... word24",
+		PasswordPrompt: func() (string, error) {
+			fmt.Print("Enter password: ")
+			var pw string
+			fmt.Scanln(&pw)
+			return pw, nil
+		},
+	}),
+)
+```
+
+## Backup
+
+### Client.Backup
+
+```go
+func (c *Client) Backup(ctx context.Context, src store.Source, opts ...BackupOption) (*BackupResult, error)
+```
+
+Creates a new backup snapshot from the specified source.
+
+**Parameters:**
+- `ctx` - Context for cancellation
+- `src` - The backup source (implements `store.Source` interface)
+- `opts` - Optional backup configuration
+
+**Returns:**
+- `BackupResult` containing snapshot ID, file counts, and byte statistics
+
+```go
+source, _ := store.NewLocalSource("/path/to/data")
+result, err := client.Backup(ctx, source,
+	cloudstic.WithTags(map[string]string{
+		"environment": "production",
+		"host":        "web-server-1",
+	}),
+	cloudstic.WithVerbose(true),
+)
+```
+
+### Backup Options
+
+- `WithVerbose(bool)` - Enable verbose output
+- `WithBackupDryRun(bool)` - Simulate backup without writing data
+- `WithTags(map[string]string)` - Add custom tags to the snapshot
+- `WithGenerator(string)` - Set the generator field (e.g., "myapp/1.0")
+- `WithMeta(map[string]interface{})` - Add custom metadata
+- `WithExcludeHash(bool)` - Skip content-addressing (for testing)
+
+### BackupResult
+
+```go
+type BackupResult struct {
+	SnapshotID       string
+	TotalFiles       int64
+	TotalBytes       int64
+	FilesAdded       int64
+	FilesModified    int64
+	FilesUnchanged   int64
+	FilesDeleted     int64
+	BytesAddedRaw    int64 // Before compression/encryption
+	BytesAddedStored int64 // After compression/encryption
+	Duration         time.Duration
+}
+```
+
+## Restore
+
+### Client.Restore
+
+```go
+func (c *Client) Restore(ctx context.Context, w io.Writer, snapshotRef string, opts ...RestoreOption) (*RestoreResult, error)
+```
+
+Writes the snapshot's file tree as a ZIP archive to the provided writer.
+
+**Parameters:**
+- `ctx` - Context for cancellation
+- `w` - Writer to receive the ZIP archive
+- `snapshotRef` - Snapshot reference: `""`, `"latest"`, bare hash, or `"snapshot/<hash>"`
+- `opts` - Optional restore configuration
+
+```go
+file, _ := os.Create("backup.zip")
+defer file.Close()
+
+result, err := client.Restore(ctx, file, "latest",
+	cloudstic.WithRestorePath("documents/"), // Only restore this path
+	cloudstic.WithRestoreVerbose(true),
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Printf("Restored %d files, %d bytes\n", result.FilesRestored, result.BytesRestored)
+```
+
+### Restore Options
+
+- `WithRestoreDryRun(bool)` - Simulate restore without writing data
+- `WithRestoreVerbose(bool)` - Enable verbose output
+- `WithRestorePath(string)` - Only restore files under this path
+
+## List Snapshots
+
+### Client.List
+
+```go
+func (c *Client) List(ctx context.Context, opts ...ListOption) (*ListResult, error)
+```
+
+Lists all snapshots in the repository.
+
+```go
+result, err := client.List(ctx, cloudstic.WithListVerbose(true))
+if err != nil {
+	log.Fatal(err)
+}
+
+for _, snap := range result.Snapshots {
+	fmt.Printf("%s: %s (%d files, %d bytes)\n",
+		snap.ID[:8], snap.Time, snap.FileCount, snap.TotalBytes)
+}
+```
+
+### Client.LsSnapshot
+
+```go
+func (c *Client) LsSnapshot(ctx context.Context, snapshotID string, opts ...LsSnapshotOption) (*LsSnapshotResult, error)
+```
+
+Lists files in a specific snapshot.
+
+```go
+result, err := client.LsSnapshot(ctx, "snapshot-id", cloudstic.WithLsVerbose(true))
+if err != nil {
+	log.Fatal(err)
+}
+
+for _, file := range result.Files {
+	fmt.Printf("%s\t%d\t%s\n", file.Type, file.Size, file.Path)
+}
+```
+
+## Maintenance
+
+### Client.Prune
+
+```go
+func (c *Client) Prune(ctx context.Context, opts ...PruneOption) (*PruneResult, error)
+```
+
+Removes unreferenced objects from the repository.
+
+```go
+result, err := client.Prune(ctx,
+	cloudstic.WithPruneDryRun(false),
+	cloudstic.WithPruneVerbose(true),
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Printf("Pruned %d objects, freed %d bytes\n",
+	result.ObjectsDeleted, result.BytesFreed)
+```
+
+### Client.Forget
+
+```go
+func (c *Client) Forget(ctx context.Context, snapshotID string, opts ...ForgetOption) (*ForgetResult, error)
+```
+
+Removes a specific snapshot.
+
+```go
+result, err := client.Forget(ctx, "snapshot-id",
+	cloudstic.WithPrune(true), // Also prune unreferenced objects
+	cloudstic.WithDryRun(false),
+)
+```
+
+### Client.ForgetPolicy
+
+```go
+func (c *Client) ForgetPolicy(ctx context.Context, opts ...ForgetOption) (*PolicyResult, error)
+```
+
+Applies retention policies to remove old snapshots.
+
+```go
+result, err := client.ForgetPolicy(ctx,
+	cloudstic.WithKeepLast(7),
+	cloudstic.WithKeepDaily(30),
+	cloudstic.WithKeepWeekly(12),
+	cloudstic.WithKeepMonthly(12),
+	cloudstic.WithKeepYearly(5),
+	cloudstic.WithPrune(true),
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Printf("Removed %d snapshots\n", len(result.RemovedSnapshots))
+```
+
+### Forget Options
+
+- `WithKeepLast(int)` - Keep the last N snapshots
+- `WithKeepHourly(int)` - Keep one snapshot per hour for N hours
+- `WithKeepDaily(int)` - Keep one snapshot per day for N days
+- `WithKeepWeekly(int)` - Keep one snapshot per week for N weeks
+- `WithKeepMonthly(int)` - Keep one snapshot per month for N months
+- `WithKeepYearly(int)` - Keep one snapshot per year for N years
+- `WithGroupBy(string)` - Group snapshots by field (comma-separated: "source,account,path")
+- `WithFilterTag(key, value)` - Only consider snapshots with this tag
+- `WithFilterSource(string)` - Only consider snapshots from this source type
+- `WithFilterAccount(string)` - Only consider snapshots from this account
+- `WithFilterPath(string)` - Only consider snapshots from this path
+- `WithPrune(bool)` - Also run prune after forgetting
+- `WithDryRun(bool)` - Simulate the operation
+
+## Verification
+
+### Client.Check
+
+```go
+func (c *Client) Check(ctx context.Context, opts ...CheckOption) (*CheckResult, error)
+```
+
+Verifies the integrity of the repository by walking the full reference chain (snapshots → HAMT nodes → filemeta → content → chunks) and checking that every referenced object can be read.
+
+```go
+result, err := client.Check(ctx,
+	cloudstic.WithReadData(true), // Re-hash chunk data for byte-level verification
+	cloudstic.WithCheckVerbose(true),
+)
+if err != nil {
+	log.Fatal(err)
+}
+
+if len(result.Errors) > 0 {
+	fmt.Printf("Found %d integrity errors\n", len(result.Errors))
+	for _, e := range result.Errors {
+		fmt.Printf("- %s: %s\n", e.ObjectKey, e.Message)
+	}
+}
+```
+
+### Check Options
+
+- `WithReadData(bool)` - Re-hash chunk data for byte-level verification
+- `WithCheckVerbose(bool)` - Enable verbose output
+- `WithSnapshotRef(string)` - Only check a specific snapshot
+
+## Utilities
+
+### Client.Diff
+
+```go
+func (c *Client) Diff(ctx context.Context, snap1, snap2 string, opts ...DiffOption) (*DiffResult, error)
+```
+
+Compares two snapshots and returns the differences.
+
+```go
+result, err := client.Diff(ctx, "snapshot1-id", "snapshot2-id")
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Printf("Added: %d files\n", len(result.Added))
+fmt.Printf("Modified: %d files\n", len(result.Modified))
+fmt.Printf("Deleted: %d files\n", len(result.Deleted))
+```
+
+### Client.Cat
+
+```go
+func (c *Client) Cat(ctx context.Context, keys ...string) ([]*CatResult, error)
+```
+
+Fetches the raw data for one or more object keys from the repository. Object keys can be `snapshot/<hash>`, `filemeta/<hash>`, `content/<hash>`, `node/<hash>`, `chunk/<hash>`, `config`, `index/latest`, `keys/<slot>`, etc.
+
+<Tip>
+This is useful for debugging, inspection, and understanding the internal structure of the repository.
+</Tip>
+
+```go
+results, err := client.Cat(ctx, "config", "index/latest")
+if err != nil {
+	log.Fatal(err)
+}
+
+for _, result := range results {
+	fmt.Printf("%s: %s\n", result.Key, string(result.Data))
+}
+```
+
+### Client.BreakLock
+
+```go
+func (c *Client) BreakLock(ctx context.Context) ([]*RepoLock, error)
+```
+
+Removes stale repository locks.
+
+```go
+locks, err := client.BreakLock(ctx)
+if err != nil {
+	log.Fatal(err)
+}
+
+fmt.Printf("Removed %d stale locks\n", len(locks))
+```
+
+### Client.Store
+
+```go
+func (c *Client) Store() store.ObjectStore
+```
+
+Returns the underlying `ObjectStore` for advanced use cases.
+
+```go
+store := client.Store()
+data, err := store.Get(ctx, "snapshot/abc123...")
+```
+
+## Error Handling
+
+All client methods return errors that can be inspected for specific failure conditions:
+
+```go
+result, err := client.Backup(ctx, source)
+if err != nil {
+	if strings.Contains(err.Error(), "repository not initialized") {
+		fmt.Println("Run 'cloudstic init' first")
+	} else if strings.Contains(err.Error(), "no provided credential matches") {
+		fmt.Println("Invalid password or encryption key")
+	} else {
+		log.Fatal(err)
+	}
+}
+```
+
+## Thread Safety
+
+<Note>
+The `Client` struct is safe for concurrent use. Multiple goroutines can call client methods simultaneously.
+</Note>
+
+```go
+var wg sync.WaitGroup
+sources := []store.Source{source1, source2, source3}
+
+for _, src := range sources {
+	wg.Add(1)
+	go func(s store.Source) {
+		defer wg.Done()
+		result, err := client.Backup(ctx, s)
+		if err != nil {
+			log.Printf("Backup failed: %v", err)
+			return
+		}
+		log.Printf("Backup complete: %s", result.SnapshotID)
+	}(src)
+}
+
+wg.Wait()
+```

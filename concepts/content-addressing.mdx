@@ -1,0 +1,412 @@
+---
+title: Content-Addressable Storage
+description: How Cloudstic uses content addressing for deduplication and integrity verification
+---
+
+Cloudstic is built on a **content-addressable storage (CAS)** model, where every object is identified by a cryptographic hash of its contents. This enables automatic deduplication, structural sharing across snapshots, and strong integrity guarantees.
+
+## What is Content Addressing?
+
+In a content-addressable system, the **name** of an object is derived from its **content**, not chosen arbitrarily. This has powerful implications:
+
+<Info>
+**Same content → Same hash → Stored once**
+
+If two files (or file chunks) have identical content, they produce the same hash and are stored only once, regardless of their original names or locations.
+</Info>
+
+### Contrast with Traditional Storage
+
+| Traditional (location-addressed) | Content-addressed |
+|----------------------------------|--------------------|
+| Files identified by path: `/documents/report.pdf` | Objects identified by hash: `filemeta/4b8f1a...` |
+| Moving a file changes its identity | Moving a file doesn't change its content hash |
+| Duplicates stored separately | Duplicates automatically deduplicated |
+| No integrity verification by default | Built-in corruption detection |
+
+## Object Addressing Scheme
+
+All Cloudstic objects follow a flat namespace convention:
+
+```
+<type>/<hash>
+```
+
+**Location:** `AGENTS.md:70-80`
+
+Examples:
+- `chunk/a3f5b8c9d1e2f4a6...` - A file data chunk
+- `content/7d9e2c5f8b3a1d4e...` - A content manifest
+- `filemeta/4b8f1a2c3d5e6f7a...` - File metadata
+- `node/c9d2e5f7a8b1c3d4...` - HAMT tree node
+- `snapshot/6e3a9f1c4b7d2e5a...` - A backup snapshot
+
+### Hash Functions by Object Type
+
+Different object types use different hash functions for security and deduplication purposes:
+
+#### Chunks: HMAC-SHA256 (when encrypted)
+
+<Note>
+Chunks use **keyed HMAC-SHA256** to prevent storage providers from confirming file contents by hashing known plaintext.
+</Note>
+
+When encryption is enabled:
+
+```go
+// Derive dedup key from encryption key
+dedupKey := HKDF-SHA256(encryptionKey, info="cloudstic-dedup-mac-v1")
+
+// Hash chunk data
+chunkHash := HMAC-SHA256(dedupKey, chunkData)
+chunkRef := "chunk/" + hex(chunkHash)
+```
+
+**Location:** `pkg/crypto/crypto.go:124-133` and `internal/engine/chunker.go:168-169`
+
+When encryption is disabled, plain SHA-256 is used:
+
+```go
+chunkHash := SHA-256(chunkData)
+chunkRef := "chunk/" + hex(chunkHash)
+```
+
+**Location:** `internal/engine/chunker.go:171`
+
+#### All Other Objects: SHA-256
+
+Metadata objects (`content/`, `filemeta/`, `node/`, `snapshot/`) use plain SHA-256 of their canonical JSON representation:
+
+```go
+func ComputeJSONHash(obj interface{}) (string, []byte, error) {
+    // Marshal to canonical JSON
+    data := json.Marshal(obj)
+    
+    // Hash the JSON bytes
+    hash := sha256.Sum256(data)
+    
+    return hex.EncodeToString(hash[:]), data, nil
+}
+```
+
+**Location:** `internal/core/models.go:45-51`
+
+## Deduplication at Two Levels
+
+Cloudstic performs deduplication at both the **chunk level** and the **content level**:
+
+### Chunk-Level Deduplication
+
+Before writing a chunk, the engine checks if it already exists:
+
+```go
+ref := "chunk/" + ComputeHMAC(dedupKey, chunkData)
+
+exists, err := store.Exists(ctx, ref)
+if exists {
+    return ref, nil  // Skip upload, reuse existing chunk
+}
+
+store.Put(ctx, ref, chunkData)  // Upload new chunk
+```
+
+**Location:** `internal/engine/chunker.go:166-186`
+
+This means:
+- Identical 1MB regions across different files share a single stored chunk
+- Within a single large file, any repeated 1MB segments are stored once
+- **Across snapshots**, unchanged chunks are never re-uploaded
+
+<Tip>
+**Example:** If you back up a 1GB database file and only 10MB changes, the next backup uploads only ~10 new chunks (10MB), not the entire 1GB.
+</Tip>
+
+### Content-Level Deduplication
+
+Before chunking a file, the engine checks if the entire file's content already exists:
+
+```go
+contentHash := source.GetContentHash(file)  // e.g., Drive MD5
+contentRef := "content/" + contentHash
+
+exists, err := store.Exists(ctx, contentRef)
+if exists {
+    // Entire file already backed up - skip chunking/upload
+    return contentRef, nil
+}
+
+// File is new - chunk and upload
+chunks, size, hash := chunker.ProcessStream(file)
+```
+
+**Location:** `internal/engine/backup.go` (BackupManager)
+
+This means:
+- A "new" file that's identical to a previously backed-up file uploads **zero bytes**
+- Only a new `filemeta` object is created (a few hundred bytes)
+- The existing `content` and `chunk` objects are reused
+
+**Cross-Tenant Deduplication:**
+
+<Info>
+When encryption is enabled, **each tenant has a unique dedup key**, so cross-tenant deduplication does not occur. This is by design for privacy.
+</Info>
+
+**Location:** `docs/encryption.md:157-170`
+
+## The Content Addressing Pipeline
+
+Here's how a file flows through the content-addressing pipeline during backup:
+
+```
+┌─────────────────────┐
+│   File: report.pdf  │
+│   Size: 3.5 MB      │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────┐
+│ FastCDC Chunker                             │
+│ • Split at content-defined boundaries       │
+│ • Min: 512KB, Avg: 1MB, Max: 8MB          │
+└──────────┬──────────────────────────────────┘
+           │
+           ▼
+  ┌────────────────────────────────────┐
+  │ Chunk 1: 1.2 MB                    │
+  │ Chunk 2: 1.5 MB                    │
+  │ Chunk 3: 0.8 MB                    │
+  └────────┬───────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────┐
+│ Hash each chunk                             │
+│ • If encrypted: HMAC-SHA256(dedupKey, data)│
+│ • If not: SHA-256(data)                    │
+└──────────┬──────────────────────────────────┘
+           │
+           ▼
+  ┌────────────────────────────────────┐
+  │ chunk/a3f5b8c9...                  │
+  │ chunk/7d9e2c5f...                  │
+  │ chunk/4b8f1a2c...                  │
+  └────────┬───────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────┐
+│ Check existence: store.Exists(ref)          │
+│ • Exists → skip upload, reuse               │
+│ • New → compress with zstd                  │
+│        → encrypt with AES-256-GCM           │
+│        → upload to store                    │
+└──────────┬──────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────┐
+│ Create Content object                       │
+│ {                                           │
+│   "type": "content",                        │
+│   "size": 3500000,                          │
+│   "chunks": [                               │
+│     "chunk/a3f5b8c9...",                    │
+│     "chunk/7d9e2c5f...",                    │
+│     "chunk/4b8f1a2c..."                     │
+│   ]                                         │
+│ }                                           │
+│                                             │
+│ Hash: SHA-256(canonical_json)               │
+│ Ref: content/e8f3d1a4...                    │
+└──────────┬──────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────┐
+│ Create FileMeta object                      │
+│ {                                           │
+│   "fileId": "1A2B3C4D",                     │
+│   "name": "report.pdf",                     │
+│   "type": "file",                           │
+│   "content_hash": "e8f3d1a4...",            │
+│   "size": 3500000,                          │
+│   "mtime": 1710000000                       │
+│ }                                           │
+│                                             │
+│ Hash: SHA-256(canonical_json)               │
+│ Ref: filemeta/9c2e5f7a...                   │
+└──────────┬──────────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────┐
+│ Insert into HAMT                            │
+│ key: "1A2B3C4D"  (fileId)                   │
+│ value: "filemeta/9c2e5f7a..."               │
+└─────────────────────────────────────────────┘
+```
+
+**Location:** `internal/engine/chunker.go:46-164`
+
+## Structural Sharing via Merkle Tree
+
+The HAMT (Hash Array Mapped Trie) is a **Merkle tree**, where:
+- Each node's hash depends on its children's hashes
+- Only nodes along the path of a change need to be rewritten
+- Unchanged subtrees are reused by reference
+
+<Info>
+**Merkle trees enable structural sharing**: two snapshots that differ in only 10 files share 99%+ of their tree nodes.
+</Info>
+
+### Example: Modifying One File
+
+```
+Snapshot 1                    Snapshot 2
+    root_old                      root_new
+    /  |  \                       /  |  \
+   A   B   C      ──modify─→    A   B'  C
+      /|\                           /|\
+     D E F                         D E' F
+```
+
+When a single file changes:
+1. A new `filemeta` object is created (different content hash)
+2. The HAMT leaf containing that file is rewritten
+3. All parent nodes up to the root are rewritten (hashes change)
+4. **All other nodes (`A`, `C`, `D`, `F`) are reused by reference**
+
+For a 1 million file backup with 100 changed files:
+- **100 new `filemeta` objects** (~10KB each = 1MB)
+- **~20 new HAMT nodes** (changed leaves + ancestors = ~5KB)
+- **Total metadata overhead: ~1MB** instead of re-writing the entire tree
+
+**Location:** `internal/hamt/hamt.go:183-303` and `docs/spec.md:306-320`
+
+## Content Addressing and Security
+
+### Preventing Plaintext Hash Leakage
+
+If chunks were addressed by plain SHA-256, a malicious storage provider could:
+
+1. Hash known plaintext (e.g., "password123")
+2. Check if `chunk/<hash>` exists in your backup
+3. Confirm you have that content without decrypting anything
+
+This is called a **"confirmation-of-a-file" attack**.
+
+<Note>
+Cloudstic prevents this by using **HMAC-SHA256 keyed by a secret dedup key** derived from your encryption key.
+</Note>
+
+Without the dedup key, the provider cannot reproduce your chunk references, even if they have the plaintext.
+
+**Location:** `docs/encryption.md:150-155`
+
+### Dedup Key Derivation
+
+```
+master_key (256-bit random)
+    ↓
+    HKDF-SHA256(info="cloudstic-backup-v1")
+    ↓
+encryption_key (256-bit for AES-256-GCM)
+    ↓
+    HKDF-SHA256(info="cloudstic-dedup-mac-v1")
+    ↓
+dedup_key (256-bit for HMAC-SHA256)
+```
+
+**Location:** `pkg/crypto/crypto.go:111-126` and `docs/encryption.md:106-134`
+
+### Integrity Verification
+
+Content addressing provides **built-in integrity checking**:
+
+1. When you fetch `chunk/a3f5b8c9...`, you compute `HMAC-SHA256(dedupKey, data)`
+2. If the result doesn't match `a3f5b8c9...`, the data is corrupted or tampered with
+3. The read fails immediately
+
+No separate checksums or signatures are needed - the addressing scheme **is** the integrity check.
+
+## Small File Optimization
+
+Very small files (< 4KB) are stored inline instead of chunked:
+
+```json
+{
+  "type": "content",
+  "size": 2048,
+  "data_inline_b64": "SGVsbG8gd29ybGQh..."
+}
+```
+
+This avoids the overhead of creating a separate chunk object for tiny files.
+
+**Location:** `internal/core/models.go:26`
+
+## Immutability Guarantees
+
+<Tip>
+All content-addressed objects are **write-once, read-many**. Once `chunk/a3f5b8c9...` is written, it never changes.
+</Tip>
+
+Benefits:
+- **Concurrent backups are safe**: Two backups can write the same chunk simultaneously - they'll both succeed because the content is identical
+- **Crash safety**: Partial writes create orphaned objects that don't affect existing snapshots
+- **No delete-then-write races**: Deduplication via `Exists()` check means chunks are never deleted during active backups
+
+The only **mutable** objects are:
+- `index/latest` - Points to the current snapshot
+- `index/snapshots` - Catalog of all snapshots (self-healing)
+- `index/packs` - Packfile catalog (rebuilt on load if corrupted)
+
+**Location:** `docs/storage-model.md:1-105`
+
+## Garbage Collection
+
+Because objects are immutable and shared across snapshots, deletion requires **mark-and-sweep garbage collection**:
+
+### Prune Algorithm
+
+```
+1. Mark Phase
+   • List all snapshot/* keys
+   • For each snapshot:
+     - Walk HAMT nodes (node/*)
+     - Collect filemeta/* refs
+     - Collect content/* refs
+     - Collect chunk/* refs
+   • Result: set of all reachable keys
+
+2. Sweep Phase
+   • List all keys under chunk/, content/, filemeta/, node/
+   • Delete any key NOT in the reachable set
+
+3. Repack Phase (if packfiles enabled)
+   • Identify fragmented packs (>30% wasted space)
+   • Extract live objects
+   • Re-bundle into new packs
+   • Delete old packs
+```
+
+**Location:** `docs/storage-model.md:64-78` and `docs/spec.md:276-285`
+
+<Note>
+Prune requires an **exclusive lock** - no concurrent backups are allowed during garbage collection.
+</Note>
+
+## Content Addressing Benefits Summary
+
+| Benefit | How Content Addressing Enables It |
+|---------|------------------------------------|
+| **Automatic deduplication** | Same hash → stored once |
+| **Structural sharing** | Merkle tree reuses unchanged subtrees by reference |
+| **Integrity verification** | Hash mismatch = corruption detected |
+| **Immutability** | Hash is derived from content → cannot change without invalidating refs |
+| **Crash safety** | Append-only writes, orphaned objects are safe |
+| **Efficient snapshots** | Only changed chunks/metadata are written |
+| **Multi-parent support** | A file can have multiple parents without duplication |
+| **Efficient diff** | Structural tree comparison (Merkle diff) |
+
+## Further Reading
+
+- [Snapshots](/concepts/snapshots) - How content-addressed objects are assembled into point-in-time backups
+- [Encryption](/concepts/encryption) - How HMAC-keyed hashing prevents plaintext confirmation attacks
+- [Storage Model](/concepts/architecture#store-decorator-stack) - How the object store manages content-addressed objects

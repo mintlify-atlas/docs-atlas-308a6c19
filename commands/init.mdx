@@ -1,0 +1,325 @@
+---
+title: 'cloudstic init'
+description: 'Initialize a new Cloudstic repository with encryption'
+---
+
+## Overview
+
+The `cloudstic init` command bootstraps a new Cloudstic repository by creating encryption key slots and writing the repository configuration marker. This command **must be run before your first backup**.
+
+<Warning>
+  Encryption is **required by default**. All data is encrypted with AES-256-GCM unless you explicitly disable it with `-no-encryption` (not recommended).
+</Warning>
+
+## Basic Usage
+
+```bash
+cloudstic init [options]
+```
+
+## Encryption Modes
+
+### Password-Based Encryption (Recommended)
+
+```bash
+cloudstic init -encryption-password "your-secure-passphrase"
+```
+
+If running in an interactive terminal and no credentials are provided, you will be prompted to enter a password:
+
+```bash
+$ cloudstic init
+Enter new repository password: ****
+Confirm repository password: ****
+Created new encryption key slots.
+Repository initialized (encrypted: true).
+```
+
+### Platform Key Encryption
+
+For automated workflows or platform-managed keys:
+
+```bash
+cloudstic init -encryption-key "0123456789abcdef..." # 64 hex chars = 32 bytes
+```
+
+### With Recovery Key
+
+Generate a 24-word BIP39 recovery phrase during initialization:
+
+```bash
+cloudstic init -encryption-password "your-passphrase" -recovery
+```
+
+**Output:**
+```
+Created new encryption key slots.
+
+╔══════════════════════════════════════════════════════════════╗
+║                      RECOVERY KEY                           ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  abandon ability able about above absent absorb abstract...
+║                                                              ║
+║  Write down these 24 words and store them in a safe place.   ║
+║  This is the ONLY time the recovery key will be displayed.   ║
+║  If you lose your password, this key is your only way to     ║
+║  recover your encrypted backups.                             ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+
+Repository initialized (encrypted: true).
+```
+
+<Tip>
+  Store your recovery key in a password manager or write it down and keep it in a secure location. This is your **last resort** for recovering encrypted backups if you forget your password.
+</Tip>
+
+### Unencrypted Repository (Not Recommended)
+
+```bash
+cloudstic init -no-encryption
+```
+
+**Output:**
+```
+WARNING: creating unencrypted repository. Your backups will NOT be encrypted at rest.
+Repository initialized (encrypted: false).
+```
+
+<Warning>
+  Only use `-no-encryption` for testing or when storing data that is already encrypted at rest by another system. Your backup data will be stored in plaintext.
+</Warning>
+
+## Command Flags
+
+<ParamField path="-recovery" type="boolean" default="false">
+  Generate a 24-word BIP39 recovery key during initialization. The recovery phrase is displayed once and allows you to recover your repository if you lose your password or platform key.
+</ParamField>
+
+<ParamField path="-no-encryption" type="boolean" default="false">
+  Create an unencrypted repository. **Not recommended** unless you have a specific reason (e.g., data is pre-encrypted, testing, or compliance requirements).
+</ParamField>
+
+### Global Flags (All Commands)
+
+<ParamField path="-store" type="string" default="local" env="CLOUDSTIC_STORE">
+  Storage backend type. Options: `local`, `b2`, `s3`, `sftp`.
+</ParamField>
+
+<ParamField path="-store-path" type="string" default="./backup_store" env="CLOUDSTIC_STORE_PATH">
+  Local/SFTP directory path or B2/S3 bucket name where the repository will be created.
+</ParamField>
+
+<ParamField path="-store-prefix" type="string" default="" env="CLOUDSTIC_STORE_PREFIX">
+  Key prefix for B2/S3 objects. Useful for organizing multiple repositories in the same bucket.
+</ParamField>
+
+<ParamField path="-encryption-key" type="string" default="" env="CLOUDSTIC_ENCRYPTION_KEY">
+  Platform key as 64 hexadecimal characters (32 bytes). Used for platform-managed encryption in automated environments.
+</ParamField>
+
+<ParamField path="-encryption-password" type="string" default="" env="CLOUDSTIC_ENCRYPTION_PASSWORD">
+  Repository password for password-based encryption. If not provided and running interactively, you will be prompted.
+</ParamField>
+
+<ParamField path="-kms-key-arn" type="string" default="" env="CLOUDSTIC_KMS_KEY_ARN">
+  AWS KMS key ARN for envelope encryption. Requires AWS credentials with KMS decrypt permissions.
+</ParamField>
+
+<ParamField path="-verbose" type="boolean" default="false">
+  Log detailed operations.
+</ParamField>
+
+<ParamField path="-quiet" type="boolean" default="false">
+  Suppress progress output (keeps final summary).
+</ParamField>
+
+<ParamField path="-debug" type="boolean" default="false">
+  Log every store request with network call details, timing, and sizes.
+</ParamField>
+
+### S3-Specific Flags
+
+<ParamField path="-s3-endpoint" type="string" default="" env="CLOUDSTIC_S3_ENDPOINT">
+  S3-compatible endpoint URL (for MinIO, Cloudflare R2, DigitalOcean Spaces, etc.).
+</ParamField>
+
+<ParamField path="-s3-region" type="string" default="us-east-1" env="CLOUDSTIC_S3_REGION">
+  S3 region.
+</ParamField>
+
+<ParamField path="-s3-access-key" type="string" default="" env="AWS_ACCESS_KEY_ID">
+  S3 access key ID.
+</ParamField>
+
+<ParamField path="-s3-secret-key" type="string" default="" env="AWS_SECRET_ACCESS_KEY">
+  S3 secret access key.
+</ParamField>
+
+### SFTP-Specific Flags
+
+<ParamField path="-sftp-host" type="string" default="" env="CLOUDSTIC_SFTP_HOST">
+  SFTP server hostname.
+</ParamField>
+
+<ParamField path="-sftp-port" type="string" default="22" env="CLOUDSTIC_SFTP_PORT">
+  SFTP server port.
+</ParamField>
+
+<ParamField path="-sftp-user" type="string" default="" env="CLOUDSTIC_SFTP_USER">
+  SFTP username.
+</ParamField>
+
+<ParamField path="-sftp-password" type="string" default="" env="CLOUDSTIC_SFTP_PASSWORD">
+  SFTP password.
+</ParamField>
+
+<ParamField path="-sftp-key" type="string" default="" env="CLOUDSTIC_SFTP_KEY">
+  Path to SSH private key file for SFTP authentication.
+</ParamField>
+
+### Backblaze B2 Flags
+
+<Note>
+  B2 requires `B2_KEY_ID` and `B2_APP_KEY` environment variables.
+</Note>
+
+## Examples
+
+### Local Repository with Password
+
+```bash
+cloudstic init -encryption-password "my-secure-passphrase"
+```
+
+### S3 Repository with Recovery Key
+
+```bash
+export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+cloudstic init \
+  -store s3 \
+  -store-path my-backup-bucket \
+  -s3-region us-west-2 \
+  -encryption-password "my-secure-passphrase" \
+  -recovery
+```
+
+### MinIO/S3-Compatible Storage
+
+```bash
+cloudstic init \
+  -store s3 \
+  -s3-endpoint https://minio.example.com \
+  -s3-region us-east-1 \
+  -store-path my-backups \
+  -encryption-password "my-secure-passphrase"
+```
+
+### SFTP Repository
+
+```bash
+cloudstic init \
+  -store sftp \
+  -sftp-host backup.example.com \
+  -sftp-user backupuser \
+  -sftp-key ~/.ssh/id_rsa \
+  -store-path /home/backupuser/cloudstic \
+  -encryption-password "my-secure-passphrase"
+```
+
+### Backblaze B2
+
+```bash
+export B2_KEY_ID="your_key_id"
+export B2_APP_KEY="your_app_key"
+
+cloudstic init \
+  -store b2 \
+  -store-path my-bucket-name \
+  -store-prefix cloudstic/ \
+  -encryption-password "my-secure-passphrase"
+```
+
+## Behavior
+
+### Encryption Key Slots
+
+When you initialize an encrypted repository, Cloudstic:
+
+1. Generates a random 32-byte master key
+2. Wraps the master key with your password or platform key using strong KDF (scrypt for passwords)
+3. Stores the encrypted key slot(s) under `keys/` in the repository
+4. Derives an HMAC dedup key from the master key for content-addressing without exposing plaintext hashes
+
+### Adopting Existing Key Slots
+
+If key slots already exist in the store (e.g., from a previous partial init), `cloudstic init` will verify you can unlock them with the provided credentials:
+
+```
+Adopted existing encryption key slots.
+Repository initialized (encrypted: true).
+```
+
+If credentials don't match, init fails:
+
+```
+Found existing key slots but cannot open them: no provided credential matches (types: password)
+```
+
+### Repository Already Initialized
+
+Running `init` on an already initialized repository exits immediately:
+
+```
+Repository is already initialized.
+```
+
+## Troubleshooting
+
+### Error: encryption is required by default
+
+```
+Error: encryption is required by default.
+Provide --encryption-password or --encryption-key to encrypt your repository.
+To create an unencrypted repository, pass --no-encryption (not recommended).
+```
+
+**Solution:** Provide credentials via flags or run interactively to be prompted for a password.
+
+### Error: encryption password cannot be empty
+
+```
+Error: encryption password cannot be empty.
+```
+
+**Solution:** Provide a non-empty password when prompted or via the `-encryption-password` flag.
+
+### Error: passwords do not match
+
+```
+Error: passwords do not match.
+```
+
+**Solution:** Re-run the command and ensure both password entries are identical.
+
+### Invalid --encryption-key
+
+```
+invalid --encryption-key (must be hex-encoded): encoding/hex: invalid byte: U+...
+```
+
+**Solution:** The `-encryption-key` must be exactly 64 hexadecimal characters (0-9, a-f). Generate with:
+
+```bash
+openssl rand -hex 32
+```
+
+## Related Commands
+
+- [cloudstic backup](/commands/backup) — Create your first backup after initializing
+- [cloudstic key add-recovery](/commands/key-add-recovery) — Add a recovery key to an existing repository
+- [cloudstic key passwd](/commands/key-passwd) — Change the repository password
+- [cloudstic check](/commands/check) — Verify repository integrity

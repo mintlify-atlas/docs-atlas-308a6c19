@@ -1,0 +1,393 @@
+---
+title: Backblaze B2 Storage
+description: Store backups in Backblaze B2 for cost-effective cloud storage
+---
+
+The Backblaze B2 storage backend provides cost-effective cloud storage with predictable pricing. B2 is ideal for long-term archival and backup use cases.
+
+## Configuration
+
+### Required Settings
+
+<ParamField path="CLOUDSTIC_STORE" type="string" required>
+  Set to `b2`
+</ParamField>
+
+<ParamField path="CLOUDSTIC_STORE_PATH" type="string" required>
+  The B2 bucket name (e.g., `my-backup-bucket`)
+</ParamField>
+
+<ParamField path="CLOUDSTIC_STORE_PREFIX" type="string" default="">
+  Optional prefix for all objects (e.g., `backups/`)
+</ParamField>
+
+### Authentication
+
+<ParamField path="B2_KEY_ID" type="string" required>
+  Backblaze application key ID
+</ParamField>
+
+<ParamField path="B2_APP_KEY" type="string" required>
+  Backblaze application key
+</ParamField>
+
+These credentials are obtained from the Backblaze B2 dashboard.
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Setup">
+    ```bash
+    # Set B2 credentials
+    export B2_KEY_ID=<your-key-id>
+    export B2_APP_KEY=<your-app-key>
+
+    # Initialize repository
+    cloudstic init \
+      -store b2 \
+      -store-path my-backup-bucket
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Documents
+    ```
+  </Tab>
+
+  <Tab title="With Prefix">
+    ```bash
+    # Use a prefix to organize multiple repositories
+    export B2_KEY_ID=<your-key-id>
+    export B2_APP_KEY=<your-app-key>
+
+    # Laptop backups
+    cloudstic init \
+      -store b2 \
+      -store-path my-backup-bucket \
+      -store-prefix laptop/
+
+    # Server backups (different prefix)
+    cloudstic init \
+      -store b2 \
+      -store-path my-backup-bucket \
+      -store-prefix server/
+    ```
+  </Tab>
+
+  <Tab title="CI/CD">
+    ```yaml
+    # GitHub Actions example
+    name: Backup to B2
+    on:
+      schedule:
+        - cron: '0 2 * * *'  # Daily at 2 AM
+
+    jobs:
+      backup:
+        runs-on: ubuntu-latest
+        steps:
+          - name: Checkout
+            uses: actions/checkout@v3
+
+          - name: Install Cloudstic
+            run: |
+              curl -L https://github.com/cloudstic/cli/releases/latest/download/cloudstic-linux-amd64 -o cloudstic
+              chmod +x cloudstic
+              sudo mv cloudstic /usr/local/bin/
+
+          - name: Backup
+            env:
+              B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+              B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
+              CLOUDSTIC_ENCRYPTION_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+            run: |
+              cloudstic backup \
+                -store b2 \
+                -store-path github-backups \
+                -source local \
+                -source-path .
+    ```
+  </Tab>
+</Tabs>
+
+## Getting B2 Credentials
+
+### Create a Bucket
+
+1. Log in to your [Backblaze account](https://www.backblaze.com/b2/cloud-storage.html)
+2. Navigate to "B2 Cloud Storage" → "Buckets"
+3. Click "Create a Bucket"
+4. Choose:
+   - **Bucket name**: `my-backup-bucket`
+   - **Files in bucket**: Private (recommended)
+   - **Encryption**: Server-Side Encryption (optional, Cloudstic encrypts client-side)
+5. Click "Create a Bucket"
+
+### Generate Application Keys
+
+1. Navigate to "App Keys" in the B2 dashboard
+2. Click "Add a New Application Key"
+3. Configure:
+   - **Name**: `cloudstic-backup`
+   - **Allow access to**: Specific bucket → select your bucket
+   - **Type of access**: Read and Write
+4. Click "Create New Key"
+5. **Save the key immediately** — it's only shown once!
+
+<Warning>
+The application key is only shown once. Save it securely before leaving the page.
+</Warning>
+
+## Features
+
+### Streaming Uploads
+
+The B2 store uses the Blazer library for efficient uploads:
+
+- **Streaming writes**: No need to buffer entire files in memory
+- **Automatic retries**: Handles transient network errors
+- **Parallel uploads**: Multiple chunks uploaded concurrently
+
+### Operation Timeouts
+
+All B2 operations have a 5-minute timeout to handle network issues gracefully:
+
+```go
+const b2OpTimeout = 5 * time.Minute
+```
+
+For large files or slow connections, operations will retry automatically.
+
+### Object Lifecycle
+
+B2 supports automatic lifecycle policies:
+
+1. Navigate to your bucket in the B2 dashboard
+2. Click "Lifecycle Settings"
+3. Configure:
+   - Keep only the last N versions
+   - Delete old files after X days
+
+<Note>
+Cloudstic snapshots are immutable objects, so lifecycle policies can safely delete old snapshot objects after retention policies expire.
+</Note>
+
+## Cost Optimization
+
+### Pricing Overview (as of 2024)
+
+- **Storage**: $0.005/GB/month ($5/TB/month)
+- **Downloads**: $0.01/GB (first 3x storage free)
+- **API calls**: Class B (List) $0.004/10k, Class C (Upload) free
+
+<Tabs>
+  <Tab title="Example Costs">
+    **Scenario: 500 GB backup**
+
+    Monthly costs:
+    - Storage: 500 GB × $0.005 = **$2.50**
+    - Downloads: First 1.5 TB free per month
+    - API calls: Minimal (packfiles reduce calls)
+
+    **Total: ~$2.50/month**
+
+    Compare to AWS S3 Standard:
+    - Storage: 500 GB × $0.023 = $11.50
+    - Downloads: $0.09/GB
+  </Tab>
+
+  <Tab title="Daily Backups">
+    **Scenario: Daily incremental backups**
+
+    Assumptions:
+    - 500 GB initial backup
+    - 5 GB daily changes
+    - 30-day retention
+
+    Monthly costs:
+    - Storage: 500 GB + (5 GB × 30) = 650 GB × $0.005 = **$3.25**
+    - Downloads: Free (under 3x storage)
+    - API calls: ~$0.10
+
+    **Total: ~$3.35/month**
+  </Tab>
+</Tabs>
+
+### Reduce API Costs
+
+Enable packfiles (default) to bundle small objects:
+
+```bash
+# Packfiles are enabled by default
+cloudstic init -store b2 -store-path my-bucket
+
+# Explicitly enable
+cloudstic init -store b2 -store-path my-bucket -enable-packfile=true
+```
+
+This reduces Class B (List) API calls by 10-100x.
+
+### Free Download Allowance
+
+B2 includes **3x your storage** in free downloads monthly:
+
+- 100 GB stored → 300 GB free downloads/month
+- 500 GB stored → 1.5 TB free downloads/month
+
+Restores are typically free unless you exceed this limit.
+
+## Performance
+
+### Upload Speed
+
+B2 upload performance depends on:
+
+- **Network bandwidth**: B2 can saturate gigabit connections
+- **Concurrency**: Cloudstic uses parallel uploads
+- **Packfiles**: Reduce overhead for many small files
+
+**Typical speeds:**
+- 100 Mbps connection: ~10-12 MB/s sustained
+- 1 Gbps connection: ~100-120 MB/s sustained
+
+### Download Speed
+
+Downloads are similarly fast, with global CDN acceleration available.
+
+## Troubleshooting
+
+### Authentication Errors
+
+If you see "failed to create b2 client":
+
+```bash
+# Verify credentials are set
+echo $B2_KEY_ID
+echo $B2_APP_KEY
+
+# Test with B2 CLI
+b2 authorize-account $B2_KEY_ID $B2_APP_KEY
+b2 list-buckets
+
+# Ensure key has access to the bucket
+# Check "App Keys" in B2 dashboard
+```
+
+### Bucket Not Found
+
+If you see "bucket not found or accessible":
+
+```bash
+# List available buckets
+b2 authorize-account $B2_KEY_ID $B2_APP_KEY
+b2 list-buckets
+
+# Verify application key has access
+# In B2 dashboard → App Keys → check bucket access
+```
+
+### Slow Uploads
+
+If uploads are slow:
+
+1. **Check network speed**: `speedtest-cli`
+2. **Enable packfiles**: Default, but verify: `-enable-packfile=true`
+3. **Increase concurrency**: B2 automatically uses parallel uploads
+4. **Consider compression**: Enabled by default with zstd
+
+### Timeout Errors
+
+If operations time out (5-minute default):
+
+```bash
+# Enable debug logging to see where it's stuck
+cloudstic backup -debug -store b2 -store-path my-bucket
+
+# Check network connectivity
+ping -c 5 api.backblazeb2.com
+curl -I https://api.backblazeb2.com
+```
+
+## Advanced Features
+
+### Signed URLs
+
+The B2 store supports generating time-limited download URLs:
+
+```go
+// In Go code
+url, err := store.SignedURL(ctx, "snapshot/abc123", 1*time.Hour)
+```
+
+This is used internally for secure temporary access.
+
+### Streaming Writers
+
+For large objects, use streaming writes:
+
+```go
+writer := store.NewWriter(ctx, "chunk/large-file")
+defer writer.Close()
+
+io.Copy(writer, dataSource)
+```
+
+### Prefix Isolation
+
+Use prefixes to isolate multiple repositories in one bucket:
+
+```bash
+# Production backups
+cloudstic init -store b2 -store-path shared-bucket -store-prefix prod/
+
+# Staging backups
+cloudstic init -store b2 -store-path shared-bucket -store-prefix staging/
+```
+
+Each prefix acts as a separate repository.
+
+## Comparison with S3
+
+<Tabs>
+  <Tab title="Backblaze B2">
+    **Pros:**
+    - Lower storage costs ($0.005/GB vs $0.023/GB)
+    - Free downloads (3x storage allowance)
+    - Simple, predictable pricing
+    - No multi-region complexity
+
+    **Cons:**
+    - Single region per bucket
+    - Slightly higher latency than S3
+    - Fewer third-party integrations
+  </Tab>
+
+  <Tab title="Amazon S3">
+    **Pros:**
+    - Global regions and availability zones
+    - Lower latency (especially with CloudFront)
+    - Extensive integrations
+    - Transfer Acceleration option
+
+    **Cons:**
+    - Higher storage costs
+    - Egress fees ($0.09/GB after 100 GB)
+    - More complex pricing
+    - Request costs (GET, PUT)
+  </Tab>
+</Tabs>
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Backup Command" icon="upload" href="/commands/backup">
+    Create backups to B2
+  </Card>
+  <Card title="S3 Storage" icon="aws" href="/storage/s3">
+    Alternative cloud storage
+  </Card>
+  <Card title="Restore Command" icon="download" href="/commands/restore">
+    Restore from B2
+  </Card>
+  <Card title="Prune Command" icon="trash" href="/commands/prune">
+    Reclaim storage space
+  </Card>
+</CardGroup>

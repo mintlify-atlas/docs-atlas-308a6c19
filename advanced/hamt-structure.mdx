@@ -1,0 +1,283 @@
+---
+title: HAMT Structure
+description: Hash Array Mapped Trie implementation for scalable directory indexing
+---
+
+## Overview
+
+Cloudstic uses a **Merkle Hash Array Mapped Trie (HAMT)** to map file IDs to their metadata references. This data structure provides:
+
+- **Efficient lookups** — O(log₃₂ n) depth due to 32-way branching
+- **Structural sharing** — unchanged subtrees are reused by reference between snapshots
+- **Persistent immutability** — all mutations return a new root while preserving the old one
+- **Content-addressable nodes** — nodes are identified by the hash of their content
+
+## Configuration
+
+From `internal/hamt/hamt.go`:
+
+```go
+const (
+    bitsPerLevel = 5      // 5 bits per level → 32-way branching
+    branching    = 32     // 2^bitsPerLevel
+    maxDepth     = 6      // Maximum tree depth
+    maxLeafSize  = 32     // Maximum entries per leaf node
+)
+```
+
+### Design Rationale
+
+- **5 bits per level** provides 32-way branching, balancing tree depth with node size
+- **Max depth of 6** supports 32^6 = 1,073,741,824 entries before hitting depth limit
+- **Max leaf size of 32** keeps leaf nodes small enough to serialize efficiently
+
+## Node Types
+
+### Internal Node
+
+Internal nodes use a **bitmap** to compactly represent which of the 32 child slots are populated:
+
+```json
+{
+  "type": "internal",
+  "bitmap": 2348810305,
+  "children": ["node/<sha256>", "node/<sha256>"]
+}
+```
+
+```go
+// From internal/core/models.go
+type HAMTNode struct {
+    Type     ObjectType  `json:"type"`     // "internal" or "leaf"
+    Bitmap   uint32      `json:"bitmap,omitempty"`
+    Children []string    `json:"children,omitempty"` // ["node/<sha256>", ...]
+    Entries  []LeafEntry `json:"entries,omitempty"`
+}
+```
+
+**Bitmap encoding:**
+- Each bit position (0-31) corresponds to a child slot
+- A set bit indicates that slot is populated
+- The `children` array contains only the populated slots, in order
+- Child position is computed via `popcount(bitmap & (bit - 1))`
+
+<Info>
+The bitmap compression reduces storage: a node with only 2 children stores 2 refs instead of a 32-element array.
+</Info>
+
+### Leaf Node
+
+Leaf nodes store actual key-value entries:
+
+```json
+{
+  "type": "leaf",
+  "entries": [
+    { "key": "<fileId>", "filemeta": "filemeta/<sha256>" },
+    { "key": "<fileId>", "filemeta": "filemeta/<sha256>" }
+  ]
+}
+```
+
+```go
+// From internal/core/models.go
+type LeafEntry struct {
+    Key      string `json:"key"`      // FileID
+    FileMeta string `json:"filemeta"` // "filemeta/<sha256>"
+}
+```
+
+Entries are **sorted by key** for deterministic hashing — two leaves with the same entries in different orders produce the same hash.
+
+## Path Key Computation
+
+File IDs are hashed to produce a "path key" that determines the traversal path through the tree:
+
+```go
+// From internal/hamt/hamt.go
+func computePathKey(id string) string {
+    return core.ComputeHash([]byte(id))
+}
+
+func indexForLevel(keyHex string, level int) (int, error) {
+    // Parse first 8 hex chars (32 bits) of the hash
+    val, err := strconv.ParseUint(keyHex[:8], 16, 32)
+    if err != nil {
+        return 0, err
+    }
+    // Extract 5 bits for this level
+    shift := 32 - (level+1)*bitsPerLevel
+    mask := uint64((1 << bitsPerLevel) - 1)
+    return int((val >> shift) & mask), nil
+}
+```
+
+**Example traversal:**
+1. Hash the file ID → `a7f3c92e...`
+2. Extract bits 27-31 for level 0 → index 20
+3. Extract bits 22-26 for level 1 → index 15
+4. Continue until reaching a leaf or empty slot
+
+## Operations
+
+The `Tree` type exposes a functional API where all mutations return a new root:
+
+```go
+// From internal/hamt/hamt.go
+type Tree struct {
+    store store.ObjectStore
+}
+
+func (t *Tree) Insert(root, key, value string) (string, error)
+func (t *Tree) Lookup(root, key string) (string, error)
+func (t *Tree) Delete(root, key string) (string, error)
+func (t *Tree) Walk(root string, fn func(key, value string) error) error
+func (t *Tree) Diff(root1, root2 string, fn func(DiffEntry) error) error
+func (t *Tree) NodeRefs(root string, fn func(ref string) error) error
+```
+
+### Insert Algorithm
+
+1. **Lookup existing node** at the current level
+2. If node is a **leaf**:
+   - If entry exists, update it in place (copy-on-write)
+   - If leaf has room (< 32 entries), append the new entry
+   - If leaf is full and we're not at max depth, **split** into an internal node
+3. If node is **internal**:
+   - Compute the child index for this level
+   - Recursively insert into the appropriate child
+   - Update the parent's child reference
+4. Save the modified node and return its new reference
+
+```go
+// From internal/hamt/hamt.go:insertIntoInternal
+bit := uint32(1 << idx)
+exists := node.Bitmap&bit != 0
+childPos := popcount(node.Bitmap & (bit - 1))
+
+if !exists {
+    newNode.Bitmap |= bit  // Set the bit
+    // Insert new child at computed position
+} else {
+    // Update existing child at position
+}
+```
+
+### Delete Algorithm
+
+1. Traverse to the leaf containing the key
+2. Remove the entry from the leaf
+3. If leaf becomes empty, return an empty ref
+4. Propagate changes up the tree:
+   - If a child becomes empty, remove its bit from the parent's bitmap
+   - If an internal node is left with only one child that is a leaf, **collapse** it by promoting the leaf
+
+### Structural Sharing
+
+Only nodes along the path of a modified entry change:
+
+```
+     root_old          root_new
+      /  |  \           /  |  \
+     A   B   C         A   B'  C     ← only B' is new
+         |                 |
+        ...              (modified)
+```
+
+Nodes A and C are reused by reference. Only B and its ancestors up to the root are copied.
+
+## Diff Algorithm
+
+The `Diff` operation performs a parallel traversal of two HAMT roots:
+
+```go
+// From internal/hamt/hamt.go
+type DiffEntry struct {
+    Key      string
+    OldValue string  // Empty for additions
+    NewValue string  // Empty for deletions
+}
+```
+
+**Algorithm:**
+1. If both nodes are leaves, compare entries directly
+2. If nodes are internal, iterate through all 32 buckets:
+   - If bucket exists in only one tree, collect all entries as added/removed
+   - If bucket exists in both, recursively diff the child nodes
+3. Yield a `DiffEntry` for each difference found
+
+<Note>
+The diff operation is **structural** — if two subtrees have the same root hash, they are identical and can be skipped entirely.
+</Note>
+
+## TransactionalStore
+
+During a backup, thousands of HAMT nodes are created as the tree is built incrementally. Many of these intermediate nodes become unreachable once the tree is fully constructed.
+
+The `TransactionalStore` buffers new nodes in memory and only flushes the **reachable subset** from the final root:
+
+```go
+// From internal/hamt/ (conceptual interface)
+type TransactionalStore interface {
+    Put(key string, data []byte) error      // Buffer in memory
+    Get(key string) ([]byte, error)         // Check buffer, then backing store
+    Flush(root string) error                 // BFS from root, flush reachable nodes
+}
+```
+
+**Flush algorithm:**
+1. Start a BFS from the root node
+2. For each node visited, check if it's in the in-memory buffer
+3. If buffered, write it to the persistent store
+4. Add all child refs to the BFS queue
+5. Discard any buffered nodes that were never visited
+
+This optimization avoids uploading superseded nodes that were created during tree construction but are no longer reachable.
+
+## Garbage Collection
+
+The `NodeRefs` method walks the entire tree and yields every node reference:
+
+```go
+// From internal/hamt/hamt.go
+func (t *Tree) NodeRefs(root string, fn func(ref string) error) error {
+    if root == "" {
+        return nil
+    }
+    return t.nodeRefs(root, fn)
+}
+
+func (t *Tree) nodeRefs(ref string, fn func(string) error) error {
+    if err := fn(ref); err != nil {
+        return err
+    }
+    node, err := t.loadNode(ref)
+    if err != nil {
+        return err
+    }
+    if node.Type == core.ObjectTypeInternal {
+        for _, childRef := range node.Children {
+            if err := t.nodeRefs(childRef, fn); err != nil {
+                return err
+            }
+        }
+    }
+    return nil
+}
+```
+
+This is used during the **mark phase** of garbage collection to identify all reachable HAMT nodes from a snapshot root.
+
+## Performance Characteristics
+
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Insert    | O(log₃₂ n) | Maximum 6 levels for 1B entries |
+| Lookup    | O(log₃₂ n) | Typically 2-3 network requests |
+| Delete    | O(log₃₂ n) | Includes potential collapse |
+| Walk      | O(n)       | Visits every leaf entry once |
+| Diff      | O(m)       | Where m = changed entries |
+
+<Info>
+With packfiles enabled, multiple HAMT nodes are bundled into 8MB packs. An LRU cache reduces the average lookup to 0-1 network requests after the initial pack fetch.
+</Info>

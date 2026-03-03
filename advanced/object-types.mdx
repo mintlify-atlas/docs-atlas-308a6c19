@@ -1,0 +1,455 @@
+---
+title: Object Type Specifications
+description: Detailed format specifications for all object types in the Cloudstic storage model
+---
+
+## Overview
+
+This page documents the exact structure of each object type in the Cloudstic storage model. All objects are stored as JSON (except chunks, which are raw binary) and keyed by their hash.
+
+## Chunk
+
+**Object key:** `chunk/<hmac_sha256>` or `chunk/<sha256>`
+
+**Format:** Raw binary (zstd-compressed bytes)
+
+Chunks are the **only non-JSON objects** in the system. They contain raw file data compressed with zstd.
+
+### Content-Defined Chunking
+
+Chunks are produced by **FastCDC** (Fast Content-Defined Chunking):
+
+| Parameter | Value    |
+|-----------|----------|
+| Min size  | 512 KiB  |
+| Avg size  | 1 MiB    |
+| Max size  | 8 MiB    |
+
+The final chunk of a file may be smaller than the minimum.
+
+### Hash Function
+
+- **When encrypted:** `HMAC-SHA256(dedup_key, uncompressed_data)`
+  - The dedup key is derived from the encryption key via HKDF
+  - Prevents the storage provider from confirming file contents by hashing known plaintext
+- **When unencrypted:** `SHA-256(uncompressed_data)`
+
+<Note>
+The hash is computed on the **uncompressed** data, not the stored zstd-compressed bytes. This ensures consistent deduplication regardless of compression settings.
+</Note>
+
+### Storage Format
+
+```
+Chunk object:
+┌──────────────────────┐
+│ zstd-compressed data │  ← Raw bytes, no JSON wrapper
+└──────────────────────┘
+```
+
+Reading a chunk:
+1. Fetch the object bytes
+2. Decompress with zstd
+3. Return the raw file data
+
+## Content
+
+**Object key:** `content/<sha256-of-raw-file-content>`
+
+**Format:** JSON object
+
+Content objects list the ordered chunks that make up a file's content.
+
+```json
+{
+  "type": "content",
+  "size": 10485760,
+  "chunks": [
+    "chunk/a7f3c92e...",
+    "chunk/b4e1d83f...",
+    "chunk/c9a2e75d..."
+  ]
+}
+```
+
+### Go Struct Definition
+
+From `internal/core/models.go`:
+
+```go
+type Content struct {
+    Type          ObjectType `json:"type"` // "content"
+    Size          int64      `json:"size"`
+    Chunks        []string   `json:"chunks,omitempty"`          // List of "chunk/<sha256>"
+    DataInlineB64 []byte     `json:"data_inline_b64,omitempty"` // For small files
+}
+```
+
+### Inline Data Optimization
+
+Very small files (< 512 KiB) may use `data_inline_b64` instead of `chunks` to avoid creating a separate chunk object:
+
+```json
+{
+  "type": "content",
+  "size": 142,
+  "data_inline_b64": "SGVsbG8sIHdvcmxkIQ=="
+}
+```
+
+This reduces object count and API calls for small files.
+
+## FileMeta
+
+**Object key:** `filemeta/<sha256-of-serialized-json>`
+
+**Format:** JSON object
+
+FileMeta objects contain immutable metadata about a file or folder.
+
+```json
+{
+  "version": 1,
+  "fileId": "1a2b3c4d5e6f",
+  "name": "invoice.pdf",
+  "type": "file",
+  "parents": ["filemeta/e7f8a9b0..."],
+  "paths": [],
+  "content_hash": "b4e1d83f9a2c...",
+  "size": 21733,
+  "mtime": 1710000000,
+  "owner": "user@example.com",
+  "extra": {
+    "mimeType": "application/pdf",
+    "trashed": false
+  }
+}
+```
+
+### Go Struct Definition
+
+From `internal/core/models.go`:
+
+```go
+type FileMeta struct {
+    Version     int                    `json:"version"`
+    FileID      string                 `json:"fileId"` // HAMT key
+    Name        string                 `json:"name"`
+    Type        FileType               `json:"type"`    // "file" or "folder"
+    Parents     []string               `json:"parents"` // List of "filemeta/<sha256>" refs
+    Paths       []string               `json:"paths"`
+    ContentHash string                 `json:"content_hash"` // SHA256 of raw content
+    Size        int64                  `json:"size"`
+    Mtime       int64                  `json:"mtime"` // Unix timestamp
+    Owner       string                 `json:"owner"`
+    Extra       map[string]interface{} `json:"extra,omitempty"`
+}
+
+func (f *FileMeta) Ref() (string, []byte, error) {
+    hash, data, err := ComputeJSONHash(f)
+    if err != nil {
+        return "", data, err
+    }
+    return "filemeta/" + hash, data, nil
+}
+```
+
+### Field Descriptions
+
+| Field          | Description                                                         |
+|----------------|---------------------------------------------------------------------|
+| `fileId`       | Source-specific unique identifier (Google Drive ID, relative path)   |
+| `type`         | `"file"` or `"folder"`                                              |
+| `parents`      | List of `filemeta/<sha256>` refs pointing to parent metadata objects |
+| `content_hash` | SHA-256 of the raw file content (used to key the Content object)    |
+| `paths`        | Reserved for future use (multi-path support)                        |
+| `extra`        | Source-specific metadata (e.g. MIME type, trashed status)           |
+
+<Info>
+**Important:** `fileId` is the **HAMT key** used to look up this file's metadata. It must be unique within a snapshot.
+</Info>
+
+### Folder Representation
+
+Folders are represented with:
+- `type: "folder"`
+- `content_hash: ""` (empty string)
+- `size: 0`
+- `chunks: []` in the content object (if created)
+
+### Parent References
+
+The `parents` field contains refs to **parent FileMeta objects**, not raw file IDs. This allows reconstructing the full directory path by walking the parent chain.
+
+## HAMT Node
+
+**Object key:** `node/<sha256-of-serialized-json>`
+
+**Format:** JSON object
+
+See [HAMT Structure](/advanced/hamt-structure) for detailed documentation.
+
+### Internal Node
+
+```json
+{
+  "type": "internal",
+  "bitmap": 2348810305,
+  "children": [
+    "node/a7f3c92e...",
+    "node/b4e1d83f..."
+  ]
+}
+```
+
+### Leaf Node
+
+```json
+{
+  "type": "leaf",
+  "entries": [
+    {
+      "key": "1a2b3c4d5e6f",
+      "filemeta": "filemeta/e7f8a9b0..."
+    },
+    {
+      "key": "2b3c4d5e6f7g",
+      "filemeta": "filemeta/f8a9b0c1..."
+    }
+  ]
+}
+```
+
+### Go Struct Definition
+
+From `internal/core/models.go`:
+
+```go
+type HAMTNode struct {
+    Type     ObjectType  `json:"type"` // "internal" or "leaf"
+    Bitmap   uint32      `json:"bitmap,omitempty"`
+    Children []string    `json:"children,omitempty"` // ["node/<sha256>", ...]
+    Entries  []LeafEntry `json:"entries,omitempty"`
+}
+
+type LeafEntry struct {
+    Key      string `json:"key"`      // FileID
+    FileMeta string `json:"filemeta"` // "filemeta/<sha256>"
+}
+```
+
+## Snapshot
+
+**Object key:** `snapshot/<sha256-of-serialized-json>`
+
+**Format:** JSON object
+
+Snapshots are point-in-time backup checkpoints referencing a HAMT root.
+
+```json
+{
+  "version": 1,
+  "created": "2025-12-01T12:00:00Z",
+  "root": "node/a7f3c92e...",
+  "seq": 42,
+  "source": {
+    "type": "gdrive",
+    "account": "user@gmail.com",
+    "path": "my-drive://"
+  },
+  "meta": {
+    "generator": "cloudstic-cli",
+    "hostname": "workstation-01"
+  },
+  "tags": ["daily", "important"],
+  "change_token": "12345",
+  "exclude_hash": "d4c3b2a1..."
+}
+```
+
+### Go Struct Definition
+
+From `internal/core/models.go`:
+
+```go
+type Snapshot struct {
+    Version     int               `json:"version"`
+    Created     string            `json:"created"` // ISO8601
+    Root        string            `json:"root"`    // "node/<sha256>"
+    Seq         int               `json:"seq"`
+    Source      *SourceInfo       `json:"source,omitempty"`
+    Meta        map[string]string `json:"meta,omitempty"`
+    Tags        []string          `json:"tags,omitempty"`
+    ChangeToken string            `json:"change_token,omitempty"`
+    ExcludeHash string            `json:"exclude_hash,omitempty"`
+}
+
+type SourceInfo struct {
+    Type    string `json:"type"`              // e.g. "gdrive", "local"
+    Account string `json:"account,omitempty"` // Google account email, hostname
+    Path    string `json:"path,omitempty"`    // root folder ID, filesystem path
+}
+```
+
+### Field Descriptions
+
+| Field          | Description                                                          |
+|----------------|----------------------------------------------------------------------|
+| `seq`          | Monotonically increasing sequence number                             |
+| `source`       | Origin of the backup (type, account, path) — used for retention grouping |
+| `meta`         | Free-form key-value metadata (generator, hostname, etc.)            |
+| `tags`         | User-defined labels for retention policies                           |
+| `change_token` | Opaque token for incremental sources (omitted when not applicable)   |
+| `exclude_hash` | Hash of the exclude patterns used for this snapshot                  |
+
+<Note>
+Every snapshot is a **complete checkpoint** — no delta replay needed. Structural sharing via the HAMT minimizes the number of new nodes.
+</Note>
+
+### Change Tokens
+
+Incremental sources (`gdrive-changes`, `onedrive-changes`) record an opaque `change_token` in each snapshot. On the next backup:
+
+1. Read the token from the previous snapshot
+2. Pass it to the source to get only changed files since that token
+3. Save the new token in the new snapshot
+
+If no previous token exists (first backup or after switching from a full-scan source), the source performs a full scan and saves the initial token.
+
+## Index Objects
+
+### index/latest
+
+**Object key:** `index/latest`
+
+**Format:** JSON object
+
+A mutable pointer to the most recent snapshot.
+
+```json
+{
+  "latest_snapshot": "snapshot/a7f3c92e...",
+  "seq": 42
+}
+```
+
+```go
+// From internal/core/models.go
+type Index struct {
+    LatestSnapshot string `json:"latest_snapshot"` // "snapshot/<sha256>"
+    Seq            int    `json:"seq"`
+}
+```
+
+### index/snapshots
+
+**Object key:** `index/snapshots`
+
+**Format:** JSON array
+
+A catalog of lightweight snapshot summaries, used to avoid fetching each full snapshot object:
+
+```json
+[
+  {
+    "ref": "snapshot/a7f3c92e...",
+    "seq": 42,
+    "created": "2025-12-01T12:00:00Z",
+    "root": "node/e7f8a9b0...",
+    "source": {
+      "type": "gdrive",
+      "account": "user@gmail.com",
+      "path": "my-drive://"
+    },
+    "tags": ["daily"],
+    "change_token": "12345"
+  }
+]
+```
+
+```go
+// From internal/core/models.go
+type SnapshotSummary struct {
+    Ref         string      `json:"ref"` // "snapshot/<hash>"
+    Seq         int         `json:"seq"`
+    Created     string      `json:"created"` // ISO8601
+    Root        string      `json:"root"`    // "node/<hash>"
+    Source      *SourceInfo `json:"source,omitempty"`
+    Tags        []string    `json:"tags,omitempty"`
+    ChangeToken string      `json:"change_token,omitempty"`
+    ExcludeHash string      `json:"exclude_hash,omitempty"`
+}
+```
+
+<Info>
+The catalog self-heals via reconciliation with `LIST snapshot/` on load. If the catalog is missing or stale, it's rebuilt automatically.
+</Info>
+
+### index/packs
+
+**Object key:** `index/packs`
+
+**Format:** bbolt database
+
+When packfiles are enabled, the pack catalog is a bbolt key-value database mapping logical object keys to their location within packfiles:
+
+```
+Logical key: "filemeta/a7f3c92e..."
+     ↓
+Pack entry: { PackID: "pack/b4e1d83f...", Offset: 1024, Length: 256 }
+```
+
+The catalog is stored as a single object in the store and loaded into memory on startup.
+
+## Encryption Key Slots
+
+**Object key:** `keys/<slot_name>`
+
+**Format:** JSON object (stored **unencrypted**)
+
+Key slots wrap the repository's master encryption key using various methods:
+
+```json
+{
+  "type": "password",
+  "salt": "base64-encoded-salt",
+  "wrapped_key": "base64-encoded-wrapped-key"
+}
+```
+
+Slot types:
+- `password` — Scrypt-derived key
+- `platform` — OS keychain-derived key
+- `kms-platform` — AWS KMS-wrapped platform key
+- `recovery` — BIP39 mnemonic-derived key
+
+<Info>
+Key slots are stored **unencrypted** under the `keys/` prefix, which the `EncryptedStore` passes through. Only the wrapped master key is encrypted.
+</Info>
+
+## Repository Config
+
+**Object key:** `config`
+
+**Format:** JSON object (stored **unencrypted**)
+
+The repository marker written by `init`:
+
+```json
+{
+  "version": 1,
+  "created": "2025-12-01T12:00:00Z",
+  "encrypted": true
+}
+```
+
+```go
+// From internal/core/models.go
+type RepoConfig struct {
+    Version   int    `json:"version"`
+    Created   string `json:"created"` // ISO8601
+    Encrypted bool   `json:"encrypted"`
+}
+```
+
+This object is stored unencrypted so that clients can determine whether the repository requires decryption before attempting to read key slots.

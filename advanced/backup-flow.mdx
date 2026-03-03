@@ -1,0 +1,426 @@
+---
+title: Backup & Restore Flow
+description: Detailed internals of the backup and restore operations
+---
+
+## Backup Flow
+
+The backup operation is orchestrated by the `BackupManager` in `internal/engine/`. Here's the complete flow:
+
+### 1. Initialization
+
+```go
+// From AGENTS.md and internal/engine/
+1. BackupManager acquires a shared lock
+2. Load the previous snapshot (if any) for this source identity
+3. Extract the previous HAMT root reference
+```
+
+**Source identity** is determined by `SourceInfo`:
+- `type` — e.g. "gdrive", "local", "onedrive"
+- `account` — Google account email, hostname, etc.
+- `path` — root folder ID, filesystem path, etc.
+
+Only snapshots matching all three fields are considered "previous" for incremental purposes.
+
+### 2. Source Scanning
+
+**Full scan** (for `local`, `sftp`, `gdrive`, `onedrive`):
+```go
+source.Walk(func(entry SourceEntry) error {
+    // Process each file/folder
+})
+```
+
+**Incremental scan** (for `gdrive-changes`, `onedrive-changes`):
+```go
+changeToken := previousSnapshot.ChangeToken
+source.WalkChanges(changeToken, func(entry SourceEntry) error {
+    // Process only changed files
+})
+```
+
+For each file encountered:
+
+1. **Look up the file ID** in the old HAMT:
+   ```go
+   oldMetaRef, err := hamtTree.Lookup(oldRoot, entry.FileID)
+   ```
+
+2. **Fast-check metadata** (name, size, mtime, type, parents):
+   - If identical and the source doesn't provide a content hash, **carry the old hash forward**
+   - This avoids false-positive diffs for metadata-only changes
+
+3. **Determine action**:
+   - **Unchanged:** Re-insert into new HAMT by reference (structural sharing)
+   - **Changed or new:** Queue for upload
+
+### 3. Upload Phase
+
+Changed/new files are processed by concurrent workers (default: 10 workers):
+
+```go
+for _, queuedFile := range uploadQueue {
+    go func(file SourceEntry) {
+        // 1. Stream file content
+        reader := source.Open(file.FileID)
+        
+        // 2. Content-defined chunking
+        chunks := fastCDC(reader, minSize, avgSize, maxSize)
+        
+        // 3. For each chunk:
+        for chunk := range chunks {
+            // Compute hash (HMAC-SHA256 or SHA-256)
+            hash := computeChunkHash(chunk.Data, dedupKey)
+            
+            // Deduplicate
+            if store.Exists("chunk/" + hash) {
+                continue // Skip, already stored
+            }
+            
+            // Compress and write
+            compressed := zstd.Compress(chunk.Data)
+            store.Put("chunk/" + hash, compressed)
+        }
+        
+        // 4. Create content object
+        contentObj := Content{
+            Type: "content",
+            Size: file.Size,
+            Chunks: chunkRefs,
+        }
+        contentHash := sha256(file.RawData)
+        store.Put("content/" + contentHash, json(contentObj))
+        
+        // 5. Create filemeta object
+        fileMeta := FileMeta{
+            FileID: file.FileID,
+            Name: file.Name,
+            Type: file.Type,
+            ContentHash: contentHash,
+            Size: file.Size,
+            Mtime: file.Mtime,
+            Parents: parentRefs,
+            ...
+        }
+        metaRef := "filemeta/" + sha256(json(fileMeta))
+        store.Put(metaRef, json(fileMeta))
+        
+        // 6. Insert into new HAMT
+        newRoot = hamtTree.Insert(newRoot, file.FileID, metaRef)
+    }(queuedFile)
+}
+```
+
+#### FastCDC Chunking
+
+From `internal/engine/chunker.go` and the spec:
+
+| Parameter | Value    |
+|-----------|----------|
+| Min size  | 512 KiB  |
+| Avg size  | 1 MiB    |
+| Max size  | 8 MiB    |
+
+FastCDC uses a rolling hash to find content-defined boundaries:
+1. Compute a rolling hash of a 64-byte window
+2. When the hash matches a pattern (e.g. last 20 bits are zero), create a boundary
+3. Enforce min/max size constraints
+4. The final chunk may be smaller than the minimum
+
+<Note>
+Content-defined chunking ensures that inserting bytes at the start of a file doesn't invalidate all subsequent chunks — only the chunks containing modified data change.
+</Note>
+
+### 4. HAMT Flush
+
+After all files are uploaded and inserted into the HAMT:
+
+```go
+// TransactionalStore buffers nodes in memory
+// Only flush the reachable subset from the final root
+txnStore.Flush(newRoot)
+```
+
+**Flush algorithm** (BFS from root):
+1. Start a queue with the root node ref
+2. For each node in the queue:
+   - If it's in the in-memory buffer, write it to persistent storage
+   - If it's an internal node, add all child refs to the queue
+3. Discard any buffered nodes that were never visited
+
+This avoids uploading intermediate superseded nodes created during tree construction.
+
+### 5. Snapshot Commit
+
+```go
+// 1. Create snapshot object
+snapshot := Snapshot{
+    Version: 1,
+    Created: time.Now().Format(time.RFC3339),
+    Root: newRoot,
+    Seq: previousSeq + 1,
+    Source: sourceInfo,
+    ChangeToken: newChangeToken, // For incremental sources
+    ...
+}
+snapshotRef := "snapshot/" + sha256(json(snapshot))
+store.Put(snapshotRef, json(snapshot))
+
+// 2. Update index/latest (the commit point)
+index := Index{
+    LatestSnapshot: snapshotRef,
+    Seq: snapshot.Seq,
+}
+store.Put("index/latest", json(index))
+
+// 3. Update index/snapshots catalog
+catalog = append(catalog, SnapshotSummary{...})
+store.Put("index/snapshots", json(catalog))
+
+// 4. Update index/packs catalog (if packfiles enabled)
+// Automatically handled by the PackStore layer
+```
+
+<Info>
+**The commit point** is updating `index/latest`. Until this write completes, the previous snapshot remains the "latest" and the repository is in a consistent state.
+</Info>
+
+### 6. Lock Release
+
+The backup lock is released, allowing other operations to proceed.
+
+## Restore Flow
+
+The restore operation is orchestrated by the `RestoreManager` in `internal/engine/`.
+
+### 1. Snapshot Resolution
+
+```go
+// Resolve snapshot by:
+// - Explicit ref ("snapshot/<hash>")
+// - Sequence number (42)
+// - "latest" keyword
+snapshot := resolveSnapshot(snapshotID)
+root := snapshot.Root
+```
+
+### 2. HAMT Traversal
+
+Walk the HAMT to collect all file metadata entries:
+
+```go
+var entries []FileMeta
+hamtTree.Walk(root, func(key, metaRef string) error {
+    // Load filemeta object
+    metaData := store.Get(metaRef)
+    meta := json.Unmarshal(metaData)
+    entries = append(entries, meta)
+})
+```
+
+### 3. Topological Sort
+
+Ensure parent directories are created before their children:
+
+```go
+// Build parent dependency graph
+graph := buildDependencyGraph(entries)
+
+// Topological sort
+sorted := topologicalSort(graph)
+```
+
+This handles Google Drive's multi-parent semantics where a file can appear in multiple directories.
+
+### 4. Path Reconstruction
+
+Walk the parent chain of each entry to reconstruct the full relative path:
+
+```go
+func buildPath(meta FileMeta) string {
+    if len(meta.Parents) == 0 {
+        return meta.Name // Root entry
+    }
+    
+    // Load first parent (arbitrary choice if multi-parent)
+    parentRef := meta.Parents[0]
+    parentData := store.Get(parentRef)
+    parentMeta := json.Unmarshal(parentData)
+    
+    parentPath := buildPath(parentMeta)
+    return parentPath + "/" + meta.Name
+}
+```
+
+<Note>
+For files with multiple parents (Google Drive shared folders), only the first parent is used to construct the primary path. Other parents are ignored during restore.
+</Note>
+
+### 5. ZIP Archive Creation
+
+Write entries to a ZIP archive in topologically-sorted order:
+
+```go
+zipWriter := zip.NewWriter(output)
+
+for _, meta := range sortedEntries {
+    path := buildPath(meta)
+    
+    if meta.Type == "folder" {
+        // Create directory entry
+        header := &zip.FileHeader{
+            Name: path + "/",
+            Method: zip.Store,
+        }
+        header.SetModTime(time.Unix(meta.Mtime, 0))
+        zipWriter.CreateHeader(header)
+    } else {
+        // Create file entry
+        header := &zip.FileHeader{
+            Name: path,
+            Method: zip.Deflate,
+        }
+        header.SetModTime(time.Unix(meta.Mtime, 0))
+        
+        writer, _ := zipWriter.CreateHeader(header)
+        
+        // Load content object
+        contentData := store.Get("content/" + meta.ContentHash)
+        content := json.Unmarshal(contentData)
+        
+        // Stream chunks
+        for _, chunkRef := range content.Chunks {
+            // Fetch and decompress chunk
+            compressedData := store.Get(chunkRef)
+            rawData := zstd.Decompress(compressedData)
+            writer.Write(rawData)
+        }
+    }
+}
+
+zipWriter.Close()
+```
+
+### 6. Output
+
+The ZIP archive is:
+- Written to stdout (CLI)
+- Returned as a byte stream (web API)
+- Saved to a file (with `-o` flag)
+
+## Performance Optimizations
+
+### Concurrent Upload
+
+The backup manager uses a worker pool (default: 10 concurrent workers) to parallelize file uploads:
+
+```go
+workerPool := make(chan struct{}, 10) // Semaphore
+
+for _, file := range uploadQueue {
+    workerPool <- struct{}{} // Acquire
+    go func(f SourceEntry) {
+        defer func() { <-workerPool }() // Release
+        processFile(f)
+    }(file)
+}
+```
+
+### Chunk-Level Deduplication
+
+Before writing a chunk:
+```go
+if store.Exists("chunk/" + hash) {
+    continue // Skip, already stored
+}
+```
+
+The `KeyCacheStore` layer caches existence checks in a local bbolt database to avoid redundant `Exists` calls:
+- First check: network request → cache result
+- Subsequent checks: local cache hit (0 network requests)
+
+### Content-Level Deduplication
+
+Before streaming a file, check if its content object already exists:
+
+```go
+if store.Exists("content/" + file.ContentHash) {
+    // Entire file upload skipped!
+    // Only create new filemeta and HAMT nodes
+}
+```
+
+For sources that provide content hashes (Google Drive MD5, OneDrive SHA1), this is a huge optimization.
+
+### Packfile Bundling
+
+Small objects (< 512KB) are bundled into 8MB packfiles:
+- Reduces API calls from thousands to dozens
+- LRU cache (128MB) keeps hot packs in memory
+- Typical metadata read: 0-1 network requests after initial pack fetch
+
+### Structural Sharing
+
+Unchanged files reuse their filemeta refs, and unchanged subtrees reuse their HAMT node refs:
+
+```
+Snapshot 1: 10,000 files → 10,000 filemeta + ~500 HAMT nodes
+Snapshot 2: 10 files changed → 10 new filemeta + ~5 new HAMT nodes
+
+Incremental storage: ~15 objects, not 10,510
+```
+
+## Error Handling
+
+### Transient Errors
+
+Network errors during upload are retried with exponential backoff:
+```go
+retry.Do(
+    func() error { return store.Put(key, data) },
+    retry.Attempts(3),
+    retry.Delay(time.Second),
+    retry.DelayType(retry.BackOffDelay),
+)
+```
+
+### Permanent Errors
+
+Permanent errors (authentication failure, permission denied) abort the backup immediately:
+```go
+if isPermanentError(err) {
+    return fmt.Errorf("backup failed: %w", err)
+}
+```
+
+### Partial Upload Cleanup
+
+If a backup is interrupted, orphaned objects remain in the store but are not reachable from any snapshot.
+
+Running `prune` after an interrupted backup will:
+1. Mark all reachable objects from existing snapshots
+2. Sweep and delete any orphaned objects
+3. Repack fragmented packfiles
+
+<Info>
+Orphaned objects are harmless — they consume storage but don't affect backup correctness. Prune reclaims this space.
+</Info>
+
+## Diff Operation
+
+The `diff` command leverages the HAMT's structural diff:
+
+```go
+hamtTree.Diff(snapshot1.Root, snapshot2.Root, func(entry DiffEntry) error {
+    if entry.OldValue == "" {
+        fmt.Printf("+ %s\n", entry.Key) // Added
+    } else if entry.NewValue == "" {
+        fmt.Printf("- %s\n", entry.Key) // Removed
+    } else {
+        fmt.Printf("M %s\n", entry.Key) // Modified
+    }
+})
+```
+
+The diff is **structural**: if two subtrees have the same root hash, they're identical and the traversal skips them entirely. This makes diff extremely fast even for snapshots with millions of files.

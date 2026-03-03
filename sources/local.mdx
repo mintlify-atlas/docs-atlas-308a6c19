@@ -1,0 +1,325 @@
+---
+title: Local Directory Source
+description: Back up files from your local filesystem with Cloudstic CLI
+---
+
+The **local** source backs up files and directories from your local filesystem. This is the simplest source type and provides the fastest backup performance.
+
+## Basic Usage
+
+Back up a local directory:
+
+```bash
+cloudstic backup -source local -source-path /path/to/directory
+```
+
+The source will recursively scan all files and folders under the specified path.
+
+## Configuration Options
+
+### Required Flags
+
+| Flag | Description |
+|------|-------------|
+| `-source local` | Specifies the local filesystem source |
+| `-source-path <path>` | Path to the directory to back up |
+
+### Optional Flags
+
+| Flag | Description |
+|------|-------------|
+| `-exclude <pattern>` | Exclude pattern (gitignore syntax, repeatable) |
+| `-exclude-file <path>` | Load exclude patterns from file |
+| `-tag <tag>` | Tag to apply to the snapshot (repeatable) |
+| `-dry-run` | Scan source without writing to store |
+
+## Examples
+
+### Basic Backup
+
+Back up your documents folder:
+
+```bash
+cloudstic backup -source local -source-path ~/Documents
+```
+
+### Backup with Exclusions
+
+Exclude temporary files and build artifacts:
+
+```bash
+cloudstic backup -source local -source-path ~/Projects \
+  -exclude "*.tmp" \
+  -exclude "node_modules/" \
+  -exclude ".git/" \
+  -exclude "target/"
+```
+
+### Using an Exclude File
+
+Create a `.backupignore` file:
+
+```gitignore
+# .backupignore
+*.tmp
+*.log
+.DS_Store
+node_modules/
+.git/
+__pycache__/
+```
+
+Then reference it in your backup:
+
+```bash
+cloudstic backup -source local -source-path ~/Projects \
+  -exclude-file .backupignore
+```
+
+### Backup with Tags
+
+Tag snapshots for easier identification:
+
+```bash
+cloudstic backup -source local -source-path ~/Documents \
+  -tag "documents" \
+  -tag "daily"
+```
+
+### Dry Run
+
+See what would be backed up without actually creating a snapshot:
+
+```bash
+cloudstic backup -source local -source-path ~/Documents -dry-run
+```
+
+## How It Works
+
+### File Scanning
+
+The local source uses Go's `filepath.Walk` to recursively traverse the directory tree. For each file and folder:
+
+1. The relative path from the root is computed
+2. Exclude patterns are applied
+3. File metadata is collected (size, modified time)
+4. The entry is passed to the backup engine
+
+### File Identification
+
+Local files are identified by their relative path from the source root. For example:
+- Source path: `/home/user/Documents`
+- File: `/home/user/Documents/report.pdf`
+- File ID: `report.pdf`
+
+For nested files:
+- File: `/home/user/Documents/Projects/README.md`
+- File ID: `Projects/README.md`
+
+### Source Information
+
+Each snapshot records:
+- **Type**: `local`
+- **Account**: Machine hostname (e.g., `mycomputer.local`)
+- **Path**: Absolute path to the backup directory (e.g., `/home/user/Documents`)
+
+## Exclude Patterns
+
+Exclude patterns use gitignore syntax:
+
+### Pattern Examples
+
+<CodeGroup>
+```bash File Extensions
+# Exclude all temporary files
+-exclude "*.tmp"
+-exclude "*.log"
+-exclude "*.cache"
+```
+
+```bash Directories
+# Exclude entire directories
+-exclude "node_modules/"
+-exclude ".git/"
+-exclude "__pycache__/"
+```
+
+```bash Specific Files
+# Exclude specific files anywhere
+-exclude ".DS_Store"
+-exclude "Thumbs.db"
+```
+
+```bash Path Patterns
+# Exclude files in specific locations
+-exclude "temp/"
+-exclude "build/"
+-exclude "dist/"
+```
+</CodeGroup>
+
+### Wildcard Syntax
+
+- `*` — Matches any number of characters except `/`
+- `**` — Matches any number of characters including `/`
+- `?` — Matches a single character
+- `[abc]` — Matches one character from the set
+- `[a-z]` — Matches one character from the range
+
+### Negation
+
+You can re-include files using `!`:
+
+```bash
+# Exclude all .log files except important.log
+-exclude "*.log"
+-exclude "!important.log"
+```
+
+## Symbolic Links
+
+<Warning>
+Symbolic links are **not followed** by the local source. If you need to back up the target of a symbolic link, back up the target directory directly.
+</Warning>
+
+## Performance Considerations
+
+### Fast Operations
+
+The local source is the fastest because:
+- No network overhead
+- Direct filesystem access
+- Efficient file metadata retrieval
+
+### Typical Performance
+
+On modern hardware:
+- **Scanning**: 10,000+ files/second
+- **Backup speed**: Limited by storage and encryption overhead
+- **Incremental backups**: Only changed files are uploaded
+
+### Optimizing Performance
+
+<Steps>
+  <Step title="Use exclude patterns">
+    Exclude unnecessary directories to reduce scan time:
+    ```bash
+    -exclude "node_modules/" -exclude ".git/"
+    ```
+  </Step>
+  
+  <Step title="Enable packfiles">
+    Bundle small objects to reduce store overhead (enabled by default):
+    ```bash
+    -enable-packfile
+    ```
+  </Step>
+  
+  <Step title="Avoid remote mounts">
+    Back up from local storage rather than network mounts when possible.
+  </Step>
+</Steps>
+
+## Common Use Cases
+
+### Personal Documents
+
+```bash
+cloudstic backup -source local -source-path ~/Documents \
+  -exclude ".DS_Store" \
+  -tag "documents"
+```
+
+### Development Projects
+
+```bash
+cloudstic backup -source local -source-path ~/Projects \
+  -exclude "node_modules/" \
+  -exclude ".git/" \
+  -exclude "target/" \
+  -exclude "build/" \
+  -tag "projects"
+```
+
+### System Configuration
+
+```bash
+cloudstic backup -source local -source-path /etc \
+  -tag "config" \
+  -tag "$(hostname)"
+```
+
+### Photo Library
+
+```bash
+cloudstic backup -source local -source-path ~/Pictures \
+  -exclude "*.tmp" \
+  -exclude ".picasaoriginals/" \
+  -tag "photos"
+```
+
+## Troubleshooting
+
+### Permission Denied
+
+If you encounter permission errors:
+
+```bash
+Error: permission denied: /path/to/file
+```
+
+**Solutions:**
+- Run Cloudstic with appropriate permissions
+- Exclude directories you don't have access to
+- Use `sudo` if backing up system directories
+
+### Disk Space
+
+For large backups, ensure you have sufficient disk space:
+
+```bash
+# Check estimated backup size
+cloudstic backup -source local -source-path ~/Documents -dry-run
+```
+
+### Path Not Found
+
+If the source path doesn't exist:
+
+```bash
+Error: stat /path/to/directory: no such file or directory
+```
+
+**Solutions:**
+- Verify the path is correct
+- Use absolute paths to avoid ambiguity
+- Check that the directory exists before running backup
+
+## Environment Variables
+
+Set default values using environment variables:
+
+```bash
+export CLOUDSTIC_SOURCE=local
+export CLOUDSTIC_SOURCE_PATH=/home/user/Documents
+
+# Now you can run backup without flags
+cloudstic backup
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SFTP Source" icon="server" href="/sources/sftp">
+    Learn about backing up remote servers
+  </Card>
+  <Card title="Restore Files" icon="download" href="/commands/restore">
+    Learn how to restore your backed up files
+  </Card>
+  <Card title="Exclude Patterns" icon="filter" href="/guides/exclude-patterns">
+    Master exclude pattern syntax
+  </Card>
+  <Card title="Incremental Backups" icon="clock" href="/guides/incremental-backups">
+    Understand how incremental backups work
+  </Card>
+</CardGroup>

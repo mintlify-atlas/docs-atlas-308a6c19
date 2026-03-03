@@ -1,80 +1,500 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Get your first Cloudstic backup running in under 5 minutes
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+Before starting, make sure you have:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Cloudstic Installed" icon="check">
+    Follow the [installation guide](/installation) if you haven't already
+  </Card>
+  <Card title="Storage Location" icon="database">
+    Choose where to store backups (local disk, S3, B2, or SFTP)
+  </Card>
 </CardGroup>
 
+<Tip>
+  This quick start uses local storage for simplicity. For cloud storage (S3, B2), see the configuration examples at the end.
+</Tip>
+
+## Your First Backup in 4 Steps
+
+<Steps>
+  <Step title="Initialize a Repository">
+    Create an encrypted repository to store your backups. Cloudstic will prompt you to set a password:
+    
+    ```bash
+    cloudstic init
+    ```
+    
+    <Accordion title="Command output">
+      ```
+      Enter new repository password: ********
+      Confirm repository password: ********
+      Created new encryption key slots.
+      Repository initialized (encrypted: true).
+      ```
+    </Accordion>
+    
+    This creates a local repository at `./backup_store` with AES-256-GCM encryption enabled.
+    
+    <Note>
+      **Recommended**: Add a recovery key during initialization for emergency access:
+      
+      ```bash
+      cloudstic init -recovery
+      ```
+      
+      Write down the 24-word recovery phrase and store it safely!
+    </Note>
+  </Step>
+  
+  <Step title="Create Your First Backup">
+    Back up a local directory (e.g., your `Documents` folder):
+    
+    ```bash
+    cloudstic backup -source local -source-path ~/Documents
+    ```
+    
+    Cloudstic will:
+    - Scan all files in the directory
+    - Chunk and compress each file with zstd
+    - Encrypt chunks with AES-256-GCM
+    - Upload only new chunks (deduplication)
+    - Create an immutable snapshot
+    
+    <Accordion title="Command output">
+      ```
+      Scanning source...
+      Found 1,247 files (2.3 GiB)
+      
+      Uploading new chunks... ███████████████████ 100%
+      
+      Backup complete.
+        Files backed up:     1,247
+        New chunks:          3,891
+        Bytes uploaded:      2.3 GiB
+        Deduplication saved: 0 B (first backup)
+        Snapshot hash:       abc123def456...
+      ```
+    </Accordion>
+    
+    <Tip>
+      **Skip development artifacts** with exclude patterns:
+      
+      ```bash
+      cloudstic backup -source local -source-path ~/project \
+        -exclude "node_modules/" -exclude ".git/" -exclude "*.log"
+      ```
+    </Tip>
+  </Step>
+  
+  <Step title="List Your Snapshots">
+    View all backups in your repository:
+    
+    ```bash
+    cloudstic list
+    ```
+    
+    <Accordion title="Command output">
+      ```
+      +-----+---------------------+------------------+--------+---------+-------------+------+
+      | SEQ | CREATED             | SNAPSHOT HASH    | SOURCE | ACCOUNT | PATH        | TAGS |
+      +-----+---------------------+------------------+--------+---------+-------------+------+
+      | 1   | 2025-03-03 10:30:45 | abc123def456...  | local  |         | ~/Documents |      |
+      +-----+---------------------+------------------+--------+---------+-------------+------+
+      ```
+    </Accordion>
+  </Step>
+  
+  <Step title="Restore Your Files">
+    Restore the latest snapshot to a ZIP file:
+    
+    ```bash
+    cloudstic restore
+    ```
+    
+    This creates `restore.zip` in the current directory with all files from the snapshot.
+    
+    <Accordion title="Restore specific files or folders">
+      ```bash
+      # Restore a single file
+      cloudstic restore -path Documents/report.pdf
+      
+      # Restore an entire folder
+      cloudstic restore -path Documents/Projects/
+      
+      # Restore to a custom location
+      cloudstic restore -output /path/to/my-backup.zip
+      
+      # Restore a specific snapshot (not the latest)
+      cloudstic restore abc123def456...
+      ```
+    </Accordion>
+  </Step>
+</Steps>
+
+<Check>
+  **Congratulations!** You've successfully created and restored your first encrypted backup.
+</Check>
+
+## Next: Run an Incremental Backup
+
+Cloudstic's content-addressable storage makes incremental backups automatic. Just run the same backup command again:
+
+```bash
+cloudstic backup -source local -source-path ~/Documents
+```
+
+Only changed files will be processed, and deduplication will skip chunks that already exist:
+
+```
+Backup complete.
+  Files backed up:     1,250 (+3 new)
+  New chunks:          18
+  Bytes uploaded:      4.7 MiB
+  Deduplication saved: 2.29 GiB ⚡
+  Snapshot hash:       def789abc012...
+```
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  **Deduplication works across all sources**: If you back up the same file from different locations (e.g., a file synced between your local drive and Google Drive), it's only stored once.
 </Note>
+
+## Preview Changes with Dry Run
+
+Before creating a backup, preview what would be uploaded:
+
+```bash
+cloudstic backup -source local -source-path ~/Documents -dry-run
+```
+
+<Accordion title="Dry run output">
+  ```
+  Scanning source...
+  Found 1,250 files (2.31 GiB)
+  
+  Would upload:
+    New files:      3
+    Modified files: 2
+    New chunks:     18
+    Bytes:          4.7 MiB
+  
+  Dry run complete (no data written).
+  ```
+</Accordion>
+
+## Back Up Cloud Drives
+
+Cloudstic works seamlessly with Google Drive and OneDrive using built-in OAuth:
+
+<Tabs>
+  <Tab title="Google Drive">
+    ### Back up your entire Google Drive
+    
+    ```bash
+    cloudstic backup -source gdrive-changes
+    ```
+    
+    On first run, your browser opens automatically for authorization. The token is cached locally for future backups.
+    
+    <Note>
+      **`gdrive-changes` vs `gdrive`**:
+      - **`gdrive-changes`** (recommended) — Uses the Changes API for fast incremental backups
+      - **`gdrive`** — Full scan of every file (use only for the first backup or to force a rescan)
+    </Note>
+    
+    ### Back up a specific folder
+    
+    ```bash
+    cloudstic backup -source gdrive-changes -root-folder <folder-id>
+    ```
+    
+    Get the folder ID from the URL when viewing the folder in Google Drive:
+    ```
+    https://drive.google.com/drive/folders/1a2b3c4d5e6f7g8h9...
+                                             ^^^^^^^^^^^^^^^^^
+    ```
+    
+    ### Back up a Shared Drive
+    
+    ```bash
+    cloudstic backup -source gdrive-changes -drive-id <shared-drive-id>
+    ```
+  </Tab>
+  
+  <Tab title="OneDrive">
+    ### Back up your entire OneDrive
+    
+    ```bash
+    cloudstic backup -source onedrive-changes
+    ```
+    
+    On first run, your browser opens automatically for authorization. The token is cached locally for future backups.
+    
+    <Note>
+      **`onedrive-changes` vs `onedrive`**:
+      - **`onedrive-changes`** (recommended) — Uses the Delta API for fast incremental backups
+      - **`onedrive`** — Full scan of every file (use only for the first backup or to force a rescan)
+    </Note>
+    
+    <Tip>
+      OneDrive backups use built-in OAuth credentials. No Microsoft app registration required!
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Use Cloud Storage Backends
+
+Store your backups on cloud storage for durability and accessibility:
+
+<Tabs>
+  <Tab title="Amazon S3">
+    ```bash
+    # Set credentials (or use AWS CLI profiles)
+    export AWS_ACCESS_KEY_ID=your-access-key
+    export AWS_SECRET_ACCESS_KEY=your-secret-key
+    
+    # Initialize repository in S3 bucket
+    cloudstic init -store s3 -store-path my-backup-bucket
+    
+    # Create a backup
+    cloudstic backup -store s3 -store-path my-backup-bucket \
+      -source local -source-path ~/Documents
+    ```
+    
+    <Accordion title="S3-Compatible Storage (R2, MinIO, Wasabi)">
+      For S3-compatible services, specify a custom endpoint:
+      
+      ```bash
+      # Cloudflare R2
+      cloudstic init -store s3 \
+        -s3-endpoint https://<account_id>.r2.cloudflarestorage.com \
+        -s3-region auto \
+        -store-path my-bucket
+      
+      # MinIO
+      cloudstic init -store s3 \
+        -s3-endpoint https://minio.example.com \
+        -s3-region us-east-1 \
+        -store-path my-bucket
+      ```
+    </Accordion>
+  </Tab>
+  
+  <Tab title="Backblaze B2">
+    ```bash
+    # Set B2 credentials
+    export B2_KEY_ID=your-key-id
+    export B2_APP_KEY=your-app-key
+    
+    # Initialize repository in B2 bucket
+    cloudstic init -store b2 -store-path my-backup-bucket
+    
+    # Create a backup
+    cloudstic backup -store b2 -store-path my-backup-bucket \
+      -source local -source-path ~/Documents
+    ```
+    
+    <Tip>
+      Backblaze B2 is significantly cheaper than S3 for backup storage. Perfect for long-term retention.
+    </Tip>
+  </Tab>
+  
+  <Tab title="SFTP">
+    ```bash
+    # Initialize repository on SFTP server
+    cloudstic init -store sftp \
+      -store-path /backups/cloudstic \
+      -sftp-host myserver.com \
+      -sftp-user backup \
+      -sftp-key ~/.ssh/id_ed25519
+    
+    # Create a backup
+    cloudstic backup -store sftp \
+      -store-path /backups/cloudstic \
+      -sftp-host myserver.com \
+      -sftp-user backup \
+      -sftp-key ~/.ssh/id_ed25519 \
+      -source local -source-path ~/Documents
+    ```
+    
+    <Note>
+      SFTP supports password authentication (`-sftp-password`) or SSH key authentication (`-sftp-key`). If neither is provided, Cloudstic uses your `SSH_AUTH_SOCK` agent.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Simplify with Environment Variables
+
+Avoid repeating flags by setting defaults in your shell profile:
+
+```bash ~/.bashrc or ~/.zshrc
+# Storage configuration
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-backup-bucket
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+
+# Encryption
+export CLOUDSTIC_ENCRYPTION_PASSWORD="my secure passphrase"
+
+# Default source
+export CLOUDSTIC_SOURCE=local
+export CLOUDSTIC_SOURCE_PATH=~/Documents
+```
+
+Now commands become much simpler:
+
+```bash
+# Just run:
+cloudstic backup
+
+# Instead of:
+cloudstic backup -store s3 -store-path my-bucket \
+  -source local -source-path ~/Documents \
+  -encryption-password "..."
+```
+
+## Common Operations
+
+<AccordionGroup>
+  <Accordion title="Compare two snapshots" icon="code-compare">
+    See what changed between backups:
+    
+    ```bash
+    cloudstic diff abc123def456... def789abc012...
+    ```
+    
+    Or compare against the latest:
+    
+    ```bash
+    cloudstic diff abc123def456... latest
+    ```
+  </Accordion>
+  
+  <Accordion title="Browse snapshot contents" icon="folder-tree">
+    List all files in a snapshot:
+    
+    ```bash
+    cloudstic ls
+    
+    # Or specify a snapshot
+    cloudstic ls abc123def456...
+    ```
+  </Accordion>
+  
+  <Accordion title="Remove old snapshots" icon="trash">
+    Delete a specific snapshot:
+    
+    ```bash
+    cloudstic forget abc123def456...
+    ```
+    
+    Apply retention policies to automatically clean up old backups:
+    
+    ```bash
+    # Keep last 7 snapshots + 4 weekly + 12 monthly
+    cloudstic forget -keep-last 7 -keep-weekly 4 -keep-monthly 12
+    ```
+  </Accordion>
+  
+  <Accordion title="Reclaim storage space" icon="broom">
+    After forgetting snapshots, run prune to delete unreferenced chunks:
+    
+    ```bash
+    cloudstic prune
+    ```
+    
+    Or combine forget and prune in one command:
+    
+    ```bash
+    cloudstic forget abc123def456... -prune
+    ```
+  </Accordion>
+  
+  <Accordion title="Verify repository integrity" icon="shield-check">
+    Check the repository for corruption:
+    
+    ```bash
+    # Basic integrity check
+    cloudstic check
+    
+    # Full byte-level verification (re-hashes all chunks)
+    cloudstic check -read-data
+    ```
+  </Accordion>
+  
+  <Accordion title="Change repository password" icon="key">
+    ```bash
+    cloudstic key passwd
+    ```
+    
+    Or non-interactively:
+    
+    ```bash
+    cloudstic key passwd \
+      -encryption-password "old passphrase" \
+      -new-password "new passphrase"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Automation Tips
+
+<CardGroup cols={2}>
+  <Card title="Cron Job" icon="clock">
+    Schedule daily backups:
+    
+    ```bash
+    # Add to crontab (crontab -e)
+    0 2 * * * /usr/local/bin/cloudstic backup
+    ```
+  </Card>
+  
+  <Card title="Platform Keys" icon="robot">
+    Use hex keys instead of passwords for automation:
+    
+    ```bash
+    # Generate a 32-byte hex key
+    KEY=$(openssl rand -hex 32)
+    
+    # Initialize with platform key
+    cloudstic init -encryption-key $KEY
+    
+    # Store key securely (e.g., in CI secrets)
+    export CLOUDSTIC_ENCRYPTION_KEY=$KEY
+    ```
+  </Card>
+</CardGroup>
+
+<Warning>
+  **Never commit credentials to version control!** Use environment variables or secret management tools.
+</Warning>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="User Guide" icon="book" href="https://github.com/cloudstic/cli/blob/main/docs/user-guide.md">
+    Complete command reference with all options and flags
+  </Card>
+  
+  <Card title="Encryption Deep Dive" icon="lock" href="https://github.com/cloudstic/cli/blob/main/docs/encryption.md">
+    Learn about key slots, recovery keys, and security design
+  </Card>
+  
+  <Card title="Storage Model" icon="database" href="https://github.com/cloudstic/cli/blob/main/docs/storage-model.md">
+    Understand content-addressable storage and deduplication
+  </Card>
+  
+  <Card title="Specification" icon="file-code" href="https://github.com/cloudstic/cli/blob/main/docs/spec.md">
+    Technical specification of object types and backup flow
+  </Card>
+</CardGroup>
+
+<Tip>
+  **Need help?** Join the discussion at [github.com/cloudstic/cli/discussions](https://github.com/cloudstic/cli/discussions) or report issues at [github.com/cloudstic/cli/issues](https://github.com/cloudstic/cli/issues).
+</Tip>

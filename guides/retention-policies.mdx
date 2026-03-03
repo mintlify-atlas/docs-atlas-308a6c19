@@ -1,0 +1,405 @@
+---
+title: "Using Retention Policies"
+description: "Automatically manage snapshot lifecycle with keep-last, daily, weekly, monthly, and yearly retention rules"
+---
+
+Retention policies let you automatically expire old snapshots while preserving a defined history. This guide explains how to use the `forget` command with policy flags to implement backup rotation strategies.
+
+## How Retention Policies Work
+
+Cloudstic's retention system uses an **OR-based** approach:
+
+- Snapshots are evaluated against all active policies (`-keep-last`, `-keep-daily`, etc.)
+- A snapshot matching **any** policy rule is kept
+- Snapshots matching **no** rules are removed
+- Multiple policies can apply to the same snapshot (e.g., a snapshot can be both "daily" and "weekly")
+
+<Note>
+  Running `forget` only removes snapshot metadata. To reclaim storage space, run `prune` afterward (or use `-prune` to do both in one step).
+</Note>
+
+## Available Retention Flags
+
+| Flag | Description |
+|------|-------------|
+| `-keep-last N` | Keep the N most recent snapshots |
+| `-keep-hourly N` | Keep N hourly snapshots (one per hour) |
+| `-keep-daily N` | Keep N daily snapshots (one per day) |
+| `-keep-weekly N` | Keep N weekly snapshots (one per ISO week) |
+| `-keep-monthly N` | Keep N monthly snapshots (one per month) |
+| `-keep-yearly N` | Keep N yearly snapshots (one per year) |
+
+## Basic Examples
+
+### Keep Only the Latest Snapshots
+
+Keep the 7 most recent backups, remove everything older:
+
+```bash
+cloudstic forget -keep-last 7 -prune
+```
+
+<Tip>
+  Always preview with `-dry-run` first:
+  ```bash
+  cloudstic forget -keep-last 7 -dry-run
+  ```
+</Tip>
+
+### Keep 30 Days of Daily Backups
+
+Keep one snapshot per day for the last 30 days:
+
+```bash
+cloudstic forget -keep-daily 30 -prune
+```
+
+How it works:
+- Snapshots are grouped by date (YYYY-MM-DD)
+- The **most recent** snapshot from each day is kept
+- Days with no snapshots are skipped
+
+### Keep Weekly Backups
+
+Keep one snapshot per week for the last 8 weeks:
+
+```bash
+cloudstic forget -keep-weekly 8 -prune
+```
+
+Weeks are defined by ISO 8601 (Monday is the first day of the week).
+
+## Common Retention Strategies
+
+### Strategy 1: Simple Daily Rotation
+
+Keep 7 days of backups:
+
+```bash
+cloudstic forget -keep-last 7 -prune
+```
+
+**Use case:** Personal backups with daily snapshots, minimal history.
+
+### Strategy 2: Grandfather-Father-Son (GFS)
+
+Keep recent, daily, weekly, and monthly backups:
+
+```bash
+cloudstic forget \
+  -keep-last 7 \
+  -keep-daily 30 \
+  -keep-weekly 8 \
+  -keep-monthly 12 \
+  -prune
+```
+
+**Use case:** Production systems requiring multiple recovery points.
+
+**Breakdown:**
+- Last 7 snapshots (any time of day)
+- One per day for 30 days
+- One per week for 8 weeks (~2 months)
+- One per month for 12 months (1 year)
+
+### Strategy 3: Long-Term Archival
+
+Keep recent backups plus yearly archives:
+
+```bash
+cloudstic forget \
+  -keep-last 14 \
+  -keep-daily 90 \
+  -keep-weekly 52 \
+  -keep-monthly 24 \
+  -keep-yearly 5 \
+  -prune
+```
+
+**Use case:** Compliance requirements, historical records.
+
+**Breakdown:**
+- Last 14 snapshots
+- One per day for 90 days (~3 months)
+- One per week for 52 weeks (1 year)
+- One per month for 24 months (2 years)
+- One per year for 5 years
+
+### Strategy 4: Frequent Recent, Sparse Historical
+
+Many recent backups, fewer old ones:
+
+```bash
+cloudstic forget \
+  -keep-last 30 \
+  -keep-weekly 12 \
+  -keep-monthly 36 \
+  -prune
+```
+
+**Use case:** Development environments, active projects.
+
+## Understanding Policy Evaluation
+
+### Grouping
+
+By default, snapshots are grouped by **source**, **account**, and **path** before policies are applied. This means each backup source is managed independently.
+
+```bash
+# These two sources have separate retention schedules
+cloudstic backup -source local -source-path ~/Documents
+cloudstic backup -source gdrive
+
+# This policy applies to BOTH groups independently
+cloudstic forget -keep-last 7 -prune
+```
+
+Change grouping behavior with `-group-by`:
+
+```bash
+# Apply policy globally (ignore source/account/path)
+cloudstic forget -keep-last 7 -group-by ""
+
+# Group only by source
+cloudstic forget -keep-last 7 -group-by "source"
+
+# Group by tags
+cloudstic forget -keep-last 7 -group-by "tags"
+```
+
+### Filtering
+
+Apply policies to specific snapshots only:
+
+<CodeGroup>
+```bash By Source
+# Keep 30 daily snapshots for Google Drive only
+cloudstic forget -keep-daily 30 -source gdrive -prune
+```
+
+```bash By Tag
+# Keep 7 snapshots tagged "important"
+cloudstic forget -keep-last 7 -tag important -prune
+```
+
+```bash By Account
+# Keep 14 daily snapshots for a specific Google account
+cloudstic forget -keep-daily 14 -account user@gmail.com -prune
+```
+
+```bash By Path
+# Keep 30 daily snapshots for a specific path
+cloudstic forget -keep-daily 30 -path /Documents -prune
+```
+</CodeGroup>
+
+### Multiple Policies Example
+
+Combine multiple retention rules:
+
+```bash
+cloudstic forget \
+  -keep-last 5 \
+  -keep-daily 7 \
+  -keep-weekly 4 \
+  -prune
+```
+
+How this works:
+
+1. **keep-last 5**: The 5 most recent snapshots are kept (regardless of age)
+2. **keep-daily 7**: One snapshot per day for 7 days is kept
+3. **keep-weekly 4**: One snapshot per week for 4 weeks is kept
+4. Any snapshot matching **any** of these rules is kept
+5. All other snapshots are removed
+
+<Warning>
+  If a snapshot matches multiple rules, it's still only kept once (but labeled with all matching reasons).
+</Warning>
+
+## Previewing Changes with Dry Run
+
+Always preview before removing snapshots:
+
+```bash
+cloudstic forget -keep-daily 7 -keep-weekly 4 -dry-run
+```
+
+Output:
+
+```
+Snapshots for source:local, path:/Documents:
+
+keep 11 snapshots:
++-----+---------------------+------------------+--------+---------+------------+------------------+
+| Seq | Created             | Snapshot Hash    | Source | Account | Path       | Reasons          |
++-----+---------------------+------------------+--------+---------+------------+------------------+
+| 15  | 2026-03-03 22:00:00 | abc123...        | local  |         | /Documents | last, daily, weekly |
+| 14  | 2026-03-02 22:00:00 | def456...        | local  |         | /Documents | last, daily      |
+| 13  | 2026-03-01 22:00:00 | ghi789...        | local  |         | /Documents | last, daily      |
+...
++-----+---------------------+------------------+--------+---------+------------+------------------+
+
+would remove 4 snapshots:
++-----+---------------------+------------------+--------+---------+------------+
+| Seq | Created             | Snapshot Hash    | Source | Account | Path       |
++-----+---------------------+------------------+--------+---------+------------+
+| 4   | 2026-02-10 22:00:00 | jkl012...        | local  |         | /Documents |
+...
++-----+---------------------+------------------+--------+---------+------------+
+
+4 snapshots would be removed (dry run)
+```
+
+Once satisfied, run without `-dry-run`:
+
+```bash
+cloudstic forget -keep-daily 7 -keep-weekly 4 -prune
+```
+
+## Running Forget Without Prune
+
+You can separate snapshot removal from storage reclamation:
+
+```bash
+# Remove snapshot metadata
+cloudstic forget -keep-last 10
+
+# Later, reclaim storage
+cloudstic prune
+```
+
+<Note>
+  Prune is a safe operation — it only deletes chunks that are not referenced by any remaining snapshot.
+</Note>
+
+## Automating Retention Policies
+
+Combine backup and retention management in scripts:
+
+```bash backup.sh
+#!/bin/bash
+set -e
+
+# Create backup
+cloudstic backup -source local -source-path ~/Documents
+
+# Apply retention policy
+cloudstic forget \
+  -keep-last 7 \
+  -keep-daily 30 \
+  -keep-weekly 8 \
+  -keep-monthly 12 \
+  -prune
+
+# Verify integrity weekly (run on Sundays)
+if [ "$(date +%u)" = "7" ]; then
+  cloudstic check
+fi
+```
+
+Schedule with cron:
+
+```cron
+0 2 * * * /home/user/backup.sh >> /var/log/backup.log 2>&1
+```
+
+See the [Automation guide](/guides/automation) for more details.
+
+## Advanced Filtering
+
+### Per-Source Policies
+
+Apply different retention rules to different backup sources:
+
+```bash
+# Keep 30 days for local backups
+cloudstic forget -keep-daily 30 -source local -prune
+
+# Keep 90 days for cloud backups
+cloudstic forget -keep-daily 90 -source gdrive -prune
+```
+
+### Tag-Based Policies
+
+Use tags to control retention:
+
+```bash
+# Create backups with tags
+cloudstic backup -source local -source-path ~/critical -tag important
+cloudstic backup -source local -source-path ~/temp -tag scratch
+
+# Keep "important" backups longer
+cloudstic forget -keep-daily 90 -tag important -prune
+
+# Remove "scratch" backups after 3 days
+cloudstic forget -keep-last 3 -tag scratch -prune
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Always use -dry-run first">
+    Preview changes before committing:
+    ```bash
+    cloudstic forget -keep-last 7 -dry-run
+    ```
+  </Step>
+
+  <Step title="Combine forget and prune">
+    Use `-prune` to reclaim storage immediately:
+    ```bash
+    cloudstic forget -keep-last 7 -prune
+    ```
+  </Step>
+
+  <Step title="Run retention after every backup">
+    Keep your repository tidy by automatically removing old snapshots:
+    ```bash
+    cloudstic backup -source local -source-path ~/Documents
+    cloudstic forget -keep-daily 30 -prune
+    ```
+  </Step>
+
+  <Step title="Document your retention policy">
+    Keep a record of your policy for disaster recovery planning.
+  </Step>
+
+  <Step title="Test restoration periodically">
+    Verify you can recover files from kept snapshots:
+    ```bash
+    cloudstic restore <snapshot-hash> -path Documents/important.pdf
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### "No snapshots to remove"
+
+All snapshots match at least one keep rule. Either adjust your policies or this is expected behavior.
+
+### Prune Removes No Data
+
+Chunks may still be referenced by other snapshots, or packfiles may need time to compact. Run `prune` again after removing more snapshots.
+
+### Unexpected Snapshot Removal
+
+Check grouping behavior with `-group-by`. By default, snapshots are grouped by source, account, and path.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Restoring Files" icon="arrow-rotate-left" href="/guides/restoring-files">
+    Recover files from retained snapshots
+  </Card>
+  <Card title="Automation" icon="robot" href="/guides/automation">
+    Automate retention policies with cron
+  </Card>
+  <Card title="Check Command" icon="check" href="/commands/check">
+    Verify repository integrity after pruning
+  </Card>
+  <Card title="Forget Command" icon="trash" href="/commands/forget">
+    Full reference for the forget command
+  </Card>
+</CardGroup>

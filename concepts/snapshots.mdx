@@ -1,0 +1,592 @@
+---
+title: Snapshot Structure
+description: Understanding Cloudstic's point-in-time snapshots and the HAMT tree structure
+---
+
+A **snapshot** in Cloudstic is a complete, immutable, point-in-time representation of your backup. Unlike incremental backup systems that require replaying deltas, every Cloudstic snapshot is a **full checkpoint** that can be restored independently.
+
+## Snapshot Object
+
+A snapshot is a JSON object stored at `snapshot/<sha256>`:
+
+```json
+{
+  "version": 1,
+  "created": "2025-12-01T12:00:00Z",
+  "root": "node/c9d2e5f7a8b1c3d4...",
+  "seq": 42,
+  "source": {
+    "type": "gdrive",
+    "account": "user@gmail.com",
+    "path": "my-drive://"
+  },
+  "meta": {
+    "generator": "cloudstic-cli"
+  },
+  "tags": ["daily", "important"],
+  "change_token": "12345"
+}
+```
+
+**Location:** `internal/core/models.go:78-89`
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `version` | Snapshot format version (currently 1) |
+| `created` | ISO 8601 timestamp |
+| `root` | Reference to the HAMT root node (`node/<hash>`) |
+| `seq` | Monotonically increasing sequence number |
+| `source` | Origin of the backup (type, account, path) |
+| `meta` | Free-form metadata (generator, tags, etc.) |
+| `tags` | User-defined labels for retention policies |
+| `change_token` | Opaque token for incremental sources (optional) |
+
+**Location:** `docs/spec.md:174-199`
+
+<Info>
+Every snapshot is a **complete checkpoint** - you can restore any snapshot without accessing previous backups.
+</Info>
+
+## The HAMT Tree
+
+The heart of a snapshot is the **HAMT (Hash Array Mapped Trie)** - a persistent Merkle tree structure that maps file IDs to their metadata references.
+
+### What is a HAMT?
+
+A HAMT is a data structure that combines:
+- **Hash table** performance (O(log₃₂ n) lookup)
+- **Persistent** updates (old versions remain valid)
+- **Merkle tree** properties (structural sharing via content addressing)
+
+**Location:** `internal/hamt/hamt.go:1-602`
+
+### Structure
+
+Cloudstic uses a 32-way branching HAMT:
+
+```
+5 bits per level → 2⁵ = 32 children per node
+```
+
+**Configuration:**
+- **Bits per level:** 5
+- **Branching factor:** 32
+- **Max leaf size:** 32 entries
+- **Max depth:** 6 levels
+
+**Location:** `internal/hamt/hamt.go:14-18`
+
+### Node Types
+
+#### Internal Node
+
+```json
+{
+  "type": "internal",
+  "bitmap": 2348810305,
+  "children": [
+    "node/a1b2c3d4...",
+    "node/e5f6g7h8..."
+  ]
+}
+```
+
+**Fields:**
+- `bitmap` (uint32) - Bit vector indicating which child slots are populated (popcount compression)
+- `children` - Array of `node/<hash>` references
+
+**Location:** `internal/core/models.go:55-60` and `docs/spec.md:141-153`
+
+<Note>
+The bitmap is a **compact representation** of which children exist. Bit `i` set means child slot `i` is populated. The `children` array contains only the populated slots (no null entries).
+</Note>
+
+#### Leaf Node
+
+```json
+{
+  "type": "leaf",
+  "entries": [
+    {
+      "key": "1A2B3C4D",
+      "filemeta": "filemeta/9c2e5f7a..."
+    },
+    {
+      "key": "5E6F7G8H",
+      "filemeta": "filemeta/3d4e5f6a..."
+    }
+  ]
+}
+```
+
+**Fields:**
+- `entries` - Array of (key, filemeta ref) pairs
+  - **key**: File ID from the source (Google Drive file ID, relative path, etc.)
+  - **filemeta**: Reference to the file's metadata object
+
+**Location:** `internal/core/models.go:62-66` and `docs/spec.md:154-167`
+
+### HAMT Operations
+
+The HAMT supports purely functional operations:
+
+```go
+type Tree struct {
+    store ObjectStore
+}
+
+// Insert or update an entry, return new root
+func (t *Tree) Insert(root, key, value string) (string, error)
+
+// Look up a key, return its value
+func (t *Tree) Lookup(root, key string) (string, error)
+
+// Walk all entries
+func (t *Tree) Walk(root string, fn func(key, value string) error) error
+
+// Compare two trees
+func (t *Tree) Diff(root1, root2 string, fn func(DiffEntry) error) error
+
+// Collect all node refs (for GC)
+func (t *Tree) NodeRefs(root string, fn func(ref string) error) error
+```
+
+**Location:** `internal/hamt/hamt.go:41-107`
+
+<Tip>
+All mutations are **purely functional** - `Insert()` returns a new root reference while the old root remains valid. This enables structural sharing between snapshots.
+</Tip>
+
+## Structural Sharing
+
+The HAMT is a **Merkle tree**: each node's hash depends on its children's hashes. When you modify one entry, only nodes along the path from that entry to the root need to be rewritten.
+
+### Example: Modifying One File
+
+```
+Before (snapshot 1)          After (snapshot 2)
+
+      root_a                       root_b
+      /  |  \                      /  |  \
+     A   B   C                    A   B'  C
+        /|\                          /|\
+       D E F                        D E' F
+                                       |
+                                   (modified leaf)
+```
+
+**What changed:**
+- **1 leaf node** (`E'` contains the updated filemeta ref)
+- **2 internal nodes** (`B'` and `root_b` have different hashes due to child changes)
+- **Nodes A, C, D, F** are reused by reference (same hashes)
+
+**Storage cost:**
+- 1 new `filemeta` object (~300 bytes)
+- 3 new `node` objects (~150 bytes each)
+- **Total: ~750 bytes** for a metadata-only change in a 1M-file backup
+
+**Location:** `docs/spec.md:306-320`
+
+<Info>
+For a 1 million file backup where 100 files change:
+- **100 new filemeta objects** (~30KB)
+- **~20 new HAMT nodes** (~5KB)
+- **Total metadata: ~35KB** instead of re-writing the entire tree
+</Info>
+
+## Path Key Computation
+
+To distribute keys evenly across the HAMT, the file ID is hashed:
+
+```go
+pathKey := SHA-256(fileId)  // 256-bit hash
+```
+
+**Location:** `internal/hamt/hamt.go:144-146`
+
+### Navigating the Tree
+
+At each level, **5 bits** of the path key determine which child to follow:
+
+```
+Level 0: bits 0-4   → child index 0-31
+Level 1: bits 5-9   → child index 0-31
+Level 2: bits 10-14 → child index 0-31
+...
+```
+
+**Location:** `internal/hamt/hamt.go:148-162`
+
+Example:
+```
+pathKey = 0x3a7f5b...
+Binary:   00111010 01111111 01011011...
+          └─────┘  └─────┘  └─────┘
+          Level 0  Level 1  Level 2
+          (14)     (31)     (11)
+```
+
+- At root (level 0): follow child 14
+- At level 1: follow child 31
+- At level 2: follow child 11
+- At level 3: reach leaf with matching entries
+
+## TransactionalStore
+
+During a backup, the HAMT tree is updated incrementally as files are processed. To avoid writing intermediate nodes that may be superseded, Cloudstic uses a **TransactionalStore**.
+
+### Workflow
+
+```go
+// 1. Create transactional store (in-memory buffer)
+txStore := NewTransactionalStore(objectStore)
+tree := NewTree(txStore)
+
+// 2. Update tree (nodes buffered in memory)
+for file := range files {
+    root = tree.Insert(root, file.ID, file.MetaRef)
+}
+
+// 3. Flush only reachable nodes (BFS from root)
+txStore.Flush(root)
+
+// 4. Write snapshot pointing to final root
+snapshot := Snapshot{Root: root, ...}
+```
+
+**Location:** `internal/hamt/cache.go`
+
+<Note>
+Only nodes **reachable from the final root** are flushed to the object store. Intermediate nodes that were superseded during the backup are discarded.
+</Note>
+
+This prevents orphaned nodes from accumulating in the store.
+
+## FileMeta Structure
+
+Each HAMT entry points to a `filemeta/<hash>` object:
+
+```json
+{
+  "version": 1,
+  "fileId": "1A2B3C4D",
+  "name": "report.pdf",
+  "type": "file",
+  "parents": [
+    "filemeta/a1b2c3d4...",
+    "filemeta/e5f6g7h8..."
+  ],
+  "paths": [],
+  "content_hash": "7d9e2c5f8b3a1d4e...",
+  "size": 3500000,
+  "mtime": 1710000000,
+  "owner": "user@example.com",
+  "extra": {
+    "mimeType": "application/pdf"
+  }
+}
+```
+
+**Location:** `internal/core/models.go:29-43` and `docs/spec.md:103-130`
+
+### Fields
+
+| Field | Description |
+|-------|-------------|
+| `fileId` | Source-specific unique identifier (HAMT key) |
+| `name` | File name |
+| `type` | `"file"` or `"folder"` |
+| `parents` | Array of `filemeta/<hash>` refs (NOT raw file IDs) |
+| `content_hash` | SHA-256 of raw file content (keys the Content object) |
+| `size` | File size in bytes (0 for folders) |
+| `mtime` | Modification time (Unix timestamp) |
+| `owner` | Owner email or username |
+| `extra` | Source-specific metadata (MIME type, permissions, etc.) |
+
+<Info>
+**Multi-parent support:** A file can have multiple parents (Google Drive allows this). The `parents` array contains references to **parent filemeta objects**, not raw file IDs.
+</Info>
+
+## Content Objects
+
+The `content_hash` field in a FileMeta points to a `content/<hash>` object:
+
+```json
+{
+  "type": "content",
+  "size": 3500000,
+  "chunks": [
+    "chunk/a3f5b8c9...",
+    "chunk/7d9e2c5f...",
+    "chunk/4b8f1a2c..."
+  ]
+}
+```
+
+For very small files (< 4KB), data is inlined:
+
+```json
+{
+  "type": "content",
+  "size": 2048,
+  "data_inline_b64": "SGVsbG8gd29ybGQh..."
+}
+```
+
+**Location:** `internal/core/models.go:20-27` and `docs/spec.md:84-100`
+
+## Chunk Objects
+
+Each chunk reference points to a `chunk/<hash>` object containing raw file data:
+
+```
+chunk/<hash>  →  [zstd-compressed bytes]
+```
+
+- FastCDC boundaries: 512KB min, 1MB avg, 8MB max
+- Deduplicated by HMAC-SHA256 (encrypted) or SHA-256 (unencrypted)
+- Compressed with zstd
+- Encrypted with AES-256-GCM (if encryption enabled)
+
+**Location:** `docs/spec.md:65-82`
+
+## Complete Snapshot Hierarchy
+
+Here's the full object graph for a snapshot:
+
+```
+snapshot/6e3a9f1c...
+    ↓ (root)
+node/c9d2e5f7...  (HAMT root)
+    ↓ (children)
+node/a1b2c3d4...  (internal node)
+    ↓ (children)
+node/e5f6g7h8...  (leaf node)
+    ↓ (entries)
+filemeta/9c2e5f7a...  (file metadata)
+    ↓ (content_hash)
+content/7d9e2c5f...  (chunk manifest)
+    ↓ (chunks)
+chunk/a3f5b8c9...  (file data)
+chunk/4b8f1a2c...
+chunk/e8f3d1a4...
+```
+
+**Object counts for a typical 1TB backup:**
+- **1 snapshot** (~500 bytes)
+- **~100,000 HAMT nodes** (~500KB compressed)
+- **~1,000,000 filemeta objects** (~100MB compressed)
+- **~50,000 content objects** (~5MB)
+- **~1,000,000 chunks** (~1TB raw data, ~800GB compressed+encrypted)
+
+## Snapshot Discovery
+
+Snapshots are discovered via two mechanisms:
+
+### 1. Latest Pointer
+
+```json
+// index/latest
+{
+  "latest_snapshot": "snapshot/6e3a9f1c...",
+  "seq": 42
+}
+```
+
+**Location:** `internal/core/models.go:92-96`
+
+This mutable pointer provides fast access to the most recent snapshot.
+
+### 2. Snapshot Catalog
+
+```json
+// index/snapshots
+[
+  {
+    "ref": "snapshot/6e3a9f1c...",
+    "seq": 42,
+    "created": "2025-12-01T12:00:00Z",
+    "root": "node/c9d2e5f7...",
+    "source": { "type": "gdrive", ... },
+    "tags": ["daily"]
+  },
+  ...
+]
+```
+
+**Location:** `internal/core/models.go:98-110` and `docs/spec.md:223`
+
+The catalog contains **lightweight summaries** of all snapshots, avoiding the need to fetch each snapshot object individually during listing operations.
+
+<Tip>
+The catalog is **self-healing**: if corrupted or missing, it's rebuilt by listing `snapshot/*` objects and fetching their metadata.
+</Tip>
+
+## Change Tokens (Incremental Sources)
+
+For sources that support incremental scans (e.g., Google Drive Changes API), the snapshot stores an opaque **change token**:
+
+```json
+{
+  "change_token": "12345"
+}
+```
+
+**Location:** `docs/spec.md:203-212`
+
+On the next backup:
+1. Read the previous snapshot's `change_token`
+2. Pass it to the source's `WalkChanges()` method
+3. Source returns only files changed since that token
+4. New snapshot stores the updated token
+
+This dramatically reduces scan time for large backups where few files change.
+
+## Snapshot Operations
+
+### Listing Snapshots
+
+```bash
+cloudstic list
+```
+
+Output:
+```
+Seq  Created              Source              Size    Files
+42   2025-12-01 12:00:00  gdrive:user@gm...   1.2 TB  1.0M
+41   2025-11-30 12:00:00  gdrive:user@gm...   1.2 TB  1.0M
+40   2025-11-29 12:00:00  gdrive:user@gm...   1.1 TB  980K
+```
+
+**Location:** `cmd/cloudstic/main.go` (runList)
+
+### Inspecting a Snapshot
+
+```bash
+cloudstic ls --snapshot 42
+cloudstic ls latest
+```
+
+Output:
+```
+Type    Path                         Size     Modified
+folder  /                            -        -
+folder  /Documents                   -        -
+file    /Documents/report.pdf        3.5 MB   2025-12-01 11:30:00
+file    /Documents/invoice.pdf       2.1 MB   2025-11-28 09:15:00
+...
+```
+
+**Location:** `cmd/cloudstic/main.go` (runLs)
+
+### Comparing Snapshots
+
+```bash
+cloudstic diff 40 42
+```
+
+Output:
+```
+Added:    20,000 files (15.2 GB)
+Modified: 5,000 files (3.8 GB)
+Deleted:  2,000 files (1.2 GB)
+
+Details:
++ /Documents/new_report.pdf (3.5 MB)
+~ /Documents/invoice.pdf (2.1 MB → 2.3 MB)
+- /Old/archived.zip (50 MB)
+```
+
+**Location:** `internal/hamt/hamt.go:70-83` (Diff method)
+
+<Note>
+The `Diff` operation leverages the HAMT structure for **efficient comparison** - it only traverses subtrees where hashes differ.
+</Note>
+
+### Restoring a Snapshot
+
+```bash
+cloudstic restore --snapshot 42 --output backup.zip
+cloudstic restore latest --output backup.zip
+```
+
+Restores the entire snapshot as a ZIP archive.
+
+**Location:** `internal/engine/restore.go`
+
+### Deleting a Snapshot
+
+```bash
+cloudstic forget --snapshot 40
+cloudstic forget --snapshot 40 --prune
+```
+
+Deletes the snapshot object. Use `--prune` to also run garbage collection and reclaim space from unreferenced objects.
+
+**Location:** `internal/engine/forget.go` and `docs/spec.md:276-279`
+
+## Garbage Collection
+
+Snapshots share objects (chunks, content, filemeta, nodes) via content addressing. Deleting a snapshot doesn't immediately reclaim space - you need to run **prune**:
+
+```bash
+cloudstic prune
+```
+
+**Algorithm:**
+
+```
+1. Mark Phase
+   • List all snapshot/* keys
+   • For each snapshot:
+     - Walk HAMT: collect all node/* refs
+     - Collect all filemeta/* refs
+     - Collect all content/* refs
+     - Collect all chunk/* refs
+   • Result: set of all reachable keys
+
+2. Sweep Phase
+   • List all keys under chunk/, content/, filemeta/, node/
+   • Delete any key NOT in the reachable set
+
+3. Repack Phase (if packfiles enabled)
+   • Identify fragmented packs (>30% wasted space)
+   • Extract live objects
+   • Re-bundle into new packs
+   • Delete old packs
+```
+
+**Location:** `docs/storage-model.md:64-78` and `docs/spec.md:280-285`
+
+<Warning>
+Prune requires an **exclusive lock** - no concurrent backups are allowed. Schedule prune during maintenance windows.
+</Warning>
+
+## Source Identity
+
+The `source` field enables **multi-source repositories**:
+
+```json
+{
+  "source": {
+    "type": "gdrive",
+    "account": "user@gmail.com",
+    "path": "my-drive://"
+  }
+}
+```
+
+**Location:** `internal/core/models.go:68-75` and `docs/spec.md:192-196`
+
+Snapshots with different source identities are treated independently:
+- **Retention policies** can target specific sources
+- **Incremental backups** look for the previous snapshot with the same source identity
+- **Different Google accounts** in the same repo won't interfere
+
+## Further Reading
+
+- [Content Addressing](/concepts/content-addressing) - How objects are identified and deduplicated
+- [Architecture](/concepts/architecture#backup-data-flow) - How snapshots are created during backup
+- [Encryption](/concepts/encryption) - How snapshot data is encrypted at rest

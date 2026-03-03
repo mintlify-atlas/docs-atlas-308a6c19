@@ -1,0 +1,460 @@
+---
+title: Google Drive Source
+description: Back up files from Google Drive (My Drive and Shared Drives) with Cloudstic CLI
+---
+
+The **Google Drive** source backs up files from Google Drive, including both My Drive and Shared Drives (formerly Team Drives). Cloudstic supports full and incremental backups using Google's Drive API.
+
+## Source Types
+
+Cloudstic provides two Google Drive source types:
+
+- **`gdrive`** — Full scan (lists all files on every backup)
+- **`gdrive-changes`** — Incremental (uses Changes API, **recommended**)
+
+<Note>
+Use `gdrive-changes` for faster incremental backups. It only fetches changes since the last backup, making subsequent backups significantly faster.
+</Note>
+
+## Basic Usage
+
+### First-Time Setup
+
+On your first backup, Cloudstic will open your browser to authenticate with Google:
+
+```bash
+cloudstic backup -source gdrive
+```
+
+You'll see:
+```
+Opening browser for authorization...
+```
+
+After granting permissions, the OAuth token is saved to `~/.config/cloudstic/google_token.json` and automatically reused for future backups.
+
+### Incremental Backups (Recommended)
+
+Use the Changes API for faster backups:
+
+```bash
+cloudstic backup -source gdrive-changes
+```
+
+## Configuration Options
+
+### Source Flags
+
+| Flag | Description | Environment Variable |
+|------|-------------|---------------------|
+| `-source gdrive` | Full scan source | `CLOUDSTIC_SOURCE` |
+| `-source gdrive-changes` | Incremental source (recommended) | `CLOUDSTIC_SOURCE` |
+| `-drive-id <id>` | Shared Drive ID (omit for My Drive) | `CLOUDSTIC_DRIVE_ID` |
+| `-root-folder <id>` | Root folder ID (defaults to entire drive) | `CLOUDSTIC_ROOT_FOLDER` |
+
+### Authentication
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to service account credentials JSON (optional) |
+| `GOOGLE_TOKEN_FILE` | Path to OAuth token file (default: `~/.config/cloudstic/google_token.json`) |
+
+### Optional Flags
+
+| Flag | Description |
+|------|-------------|
+| `-exclude <pattern>` | Exclude pattern (gitignore syntax, repeatable) |
+| `-exclude-file <path>` | Load exclude patterns from file |
+| `-tag <tag>` | Tag to apply to the snapshot (repeatable) |
+| `-dry-run` | Scan source without writing to store |
+
+## Examples
+
+### Backup My Drive
+
+Back up your entire Google Drive:
+
+```bash
+cloudstic backup -source gdrive-changes
+```
+
+### Backup a Shared Drive
+
+Back up a Shared Drive by ID:
+
+```bash
+cloudstic backup -source gdrive-changes \
+  -drive-id "0ANj8fbyJk9BxUk9PVA"
+```
+
+<Note>
+To find a Shared Drive ID, open the drive in your browser and copy the ID from the URL:
+`https://drive.google.com/drive/folders/[DRIVE_ID]`
+</Note>
+
+### Backup Specific Folder
+
+Restrict backup to a specific folder:
+
+```bash
+cloudstic backup -source gdrive-changes \
+  -root-folder "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVwQA"
+```
+
+To find a folder ID, open the folder in Google Drive and copy the ID from the URL:
+```
+https://drive.google.com/drive/folders/[FOLDER_ID]
+```
+
+### Backup with Exclusions
+
+Exclude specific folders or file types:
+
+```bash
+cloudstic backup -source gdrive-changes \
+  -exclude "Trash/" \
+  -exclude "*.tmp" \
+  -exclude "Cache/"
+```
+
+### Backup with Tags
+
+```bash
+cloudstic backup -source gdrive-changes \
+  -tag "gdrive" \
+  -tag "work" \
+  -tag "$(date +%Y-%m)"
+```
+
+## Authentication Methods
+
+Cloudstic supports two authentication methods for Google Drive:
+
+### 1. OAuth 2.0 (Default, Recommended)
+
+**How it works:**
+
+<Steps>
+  <Step title="First run">
+    Cloudstic opens your browser to Google's consent page.
+  </Step>
+  
+  <Step title="Grant permissions">
+    Allow Cloudstic to access your Google Drive (read-only).
+  </Step>
+  
+  <Step title="Token saved">
+    The OAuth token is saved to `~/.config/cloudstic/google_token.json`.
+  </Step>
+  
+  <Step title="Automatic renewal">
+    Tokens are automatically refreshed when expired.
+  </Step>
+</Steps>
+
+**Permissions requested:**
+- `https://www.googleapis.com/auth/drive.readonly` — Read-only access to your files
+
+### 2. Service Account (Advanced)
+
+For automated backups without user interaction, use a service account:
+
+<Steps>
+  <Step title="Create service account">
+    In Google Cloud Console:
+    1. Go to IAM & Admin > Service Accounts
+    2. Create a new service account
+    3. Download the JSON key file
+  </Step>
+  
+  <Step title="Grant Drive access">
+    Share your Drive or folders with the service account email:
+    ```
+    service-account@project-id.iam.gserviceaccount.com
+    ```
+  </Step>
+  
+  <Step title="Set credentials path">
+    ```bash
+    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+    cloudstic backup -source gdrive-changes
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+For Shared Drives, you must have domain-wide delegation enabled and the service account must be granted access to the Shared Drive.
+</Warning>
+
+## OAuth Flow Details
+
+### First Backup
+
+When you run your first backup:
+
+1. **Browser opens** — Cloudstic starts a local HTTP server and opens your browser
+2. **Google consent** — You sign in and grant permissions
+3. **Automatic callback** — The authorization code is captured automatically
+4. **Token exchange** — Cloudstic exchanges the code for an access token
+5. **Token saved** — Token is saved to `~/.config/cloudstic/google_token.json`
+6. **Backup starts** — Files are scanned and backed up
+
+### Subsequent Backups
+
+1. **Token loaded** — Existing token is read from disk
+2. **Automatic refresh** — If expired, the token is refreshed using the refresh token
+3. **Backup starts** — No browser interaction needed
+
+### Token Location
+
+By default, tokens are stored at:
+- Linux/macOS: `~/.config/cloudstic/google_token.json`
+- Windows: `%APPDATA%\cloudstic\google_token.json`
+
+Customize the location:
+```bash
+export GOOGLE_TOKEN_FILE=/path/to/token.json
+```
+
+## How It Works
+
+### Full Scan (`gdrive`)
+
+<Steps>
+  <Step title="List all folders">
+    Fetch all folders using the Drive API.
+  </Step>
+  
+  <Step title="Topological sort">
+    Sort folders so parents are processed before children.
+  </Step>
+  
+  <Step title="Emit folders">
+    Process folders in order, applying exclude patterns.
+  </Step>
+  
+  <Step title="List all files">
+    Fetch all files page-by-page.
+  </Step>
+  
+  <Step title="Emit files">
+    Process files, computing paths from parent relationships.
+  </Step>
+</Steps>
+
+### Incremental Scan (`gdrive-changes`)
+
+<Steps>
+  <Step title="First backup">
+    Performs a full scan and captures a start page token.
+  </Step>
+  
+  <Step title="Subsequent backups">
+    Uses the Changes API to fetch only modified/added/deleted items since the last token.
+  </Step>
+  
+  <Step title="Apply changes">
+    Updates the snapshot with changes, removing deleted files.
+  </Step>
+  
+  <Step title="Save new token">
+    Stores the new page token for the next backup.
+  </Step>
+</Steps>
+
+### File Identification
+
+Google Drive files are identified by their Drive file ID:
+- File ID: `1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVwQA`
+- Name: `report.pdf`
+- Path: `Documents/report.pdf` (computed from parent relationships)
+
+### Content Deduplication
+
+Cloudstic uses Google Drive's SHA-256 checksums to avoid re-uploading unchanged files:
+- If the checksum matches, the file is skipped
+- Only changed files are downloaded and backed up
+
+### Source Information
+
+Each snapshot records:
+- **Type**: `gdrive` or `gdrive-changes`
+- **Account**: Google account email (e.g., `user@gmail.com`)
+- **Path**: `my-drive://` or `<driveID>://<rootFolderID>`
+
+## Performance Considerations
+
+### Full Scan Performance
+
+- **First backup**: 10-50 files/second (limited by API rate limits)
+- **API calls**: ~2 requests per 1000 files
+- **Bottleneck**: Network latency and API quotas
+
+### Incremental Performance
+
+- **Small changes**: Completes in seconds (only fetches changes)
+- **Large changes**: Proportional to number of changed files
+- **Recommended**: Use `gdrive-changes` for faster backups
+
+### API Rate Limits
+
+Google Drive API has rate limits:
+- **Queries per 100 seconds**: 1000 (per user)
+- **Queries per day**: 1,000,000,000 (per project)
+
+Cloudstic automatically retries on rate limit errors (HTTP 429).
+
+## Google Drive Specifics
+
+### Google Workspace Files
+
+Google Workspace files (Docs, Sheets, Slides) are **not backed up** as binary files because:
+- They don't have a native binary format
+- They can be exported, but formats vary
+- They're stored in Google's proprietary format
+
+<Note>
+To back up Google Workspace files:
+1. Export them to standard formats (PDF, DOCX, XLSX) manually
+2. Store exports in a regular Drive folder
+3. Back up the exported files
+</Note>
+
+### Folder Structure
+
+Google Drive allows files to have multiple parents. Cloudstic handles this by:
+- Choosing the first parent when computing paths
+- Storing all parent IDs in metadata
+- Preserving the file under its primary path
+
+### Trashed Files
+
+Trashed files are **automatically excluded** from backups. Only files in your Drive (not in Trash) are backed up.
+
+## Common Use Cases
+
+### Personal Backup
+
+```bash
+# Backup your entire Google Drive
+cloudstic backup -source gdrive-changes \
+  -tag "personal" \
+  -tag "gdrive"
+```
+
+### Shared Drive Backup
+
+```bash
+# Backup a team's Shared Drive
+cloudstic backup -source gdrive-changes \
+  -drive-id "0ANj8fbyJk9BxUk9PVA" \
+  -tag "team-drive" \
+  -tag "marketing"
+```
+
+### Selective Folder Backup
+
+```bash
+# Backup only the "Important" folder
+cloudstic backup -source gdrive-changes \
+  -root-folder "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVwQA" \
+  -tag "important"
+```
+
+### Automated Backups
+
+Use a service account for automated backups:
+
+```bash
+#!/bin/bash
+export GOOGLE_APPLICATION_CREDENTIALS=/etc/cloudstic/service-account.json
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-backup-bucket
+
+cloudstic backup -source gdrive-changes \
+  -tag "automated" \
+  -tag "$(date +%Y-%m-%d)"
+```
+
+## Troubleshooting
+
+### Authentication Failed
+
+```bash
+Error: oauth2: cannot fetch token
+```
+
+**Solutions:**
+- Delete the token file and re-authenticate:
+  ```bash
+  rm ~/.config/cloudstic/google_token.json
+  cloudstic backup -source gdrive-changes
+  ```
+- Check that you have internet connectivity
+- Verify Google Drive API is enabled in your project (for service accounts)
+
+### Rate Limit Exceeded
+
+```bash
+Error: googleapi: Error 429: Rate Limit Exceeded
+```
+
+**Solutions:**
+- Cloudstic automatically retries with exponential backoff
+- Wait a few minutes and try again
+- For frequent backups, use `gdrive-changes` instead of `gdrive`
+
+### Permission Denied
+
+```bash
+Error: googleapi: Error 403: Insufficient permissions
+```
+
+**Solutions:**
+- Ensure you granted the `drive.readonly` scope during OAuth
+- For Shared Drives, ensure you have access to the drive
+- For service accounts, share the drive/folders with the service account email
+
+### Slow Backups
+
+If backups are taking too long:
+
+1. **Switch to `gdrive-changes`** for incremental backups
+2. **Use `-root-folder`** to limit scope
+3. **Add exclude patterns** to skip unnecessary folders
+4. **Check API quotas** in Google Cloud Console
+
+## Environment Variables
+
+Set default Google Drive configuration:
+
+```bash
+export CLOUDSTIC_SOURCE=gdrive-changes
+export GOOGLE_TOKEN_FILE=~/.config/cloudstic/google_token.json
+
+# For Shared Drives
+export CLOUDSTIC_DRIVE_ID="0ANj8fbyJk9BxUk9PVA"
+
+# For service accounts
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Now run backup
+cloudstic backup
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="OneDrive Source" icon="microsoft" href="/sources/onedrive">
+    Learn about backing up Microsoft OneDrive
+  </Card>
+  <Card title="Service Accounts" icon="key" href="/guides/google-service-accounts">
+    Set up service accounts for automation
+  </Card>
+  <Card title="Scheduling Backups" icon="clock" href="/guides/scheduling">
+    Automate backups with cron or systemd
+  </Card>
+  <Card title="Restore Files" icon="download" href="/commands/restore">
+    Learn how to restore your backed up files
+  </Card>
+</CardGroup>

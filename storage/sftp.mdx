@@ -1,0 +1,487 @@
+---
+title: SFTP Storage
+description: Store backups on remote servers via SSH/SFTP
+---
+
+The SFTP storage backend allows you to store backups on any server with SSH access. This is ideal for backing up to existing infrastructure or remote Linux/Unix systems.
+
+## Configuration
+
+### Required Settings
+
+<ParamField path="CLOUDSTIC_STORE" type="string" required>
+  Set to `sftp`
+</ParamField>
+
+<ParamField path="CLOUDSTIC_STORE_PATH" type="string" required>
+  Remote path on the SFTP server (e.g., `/backup/cloudstic`)
+</ParamField>
+
+<ParamField path="CLOUDSTIC_SFTP_HOST" type="string" required>
+  SFTP server hostname or IP address
+</ParamField>
+
+<ParamField path="CLOUDSTIC_SFTP_USER" type="string" required>
+  SSH username
+</ParamField>
+
+<ParamField path="CLOUDSTIC_SFTP_PORT" type="string" default="22">
+  SSH port (default: 22)
+</ParamField>
+
+### Authentication Methods
+
+Cloudstic supports three authentication methods for SFTP, tried in order:
+
+<Tabs>
+  <Tab title="SSH Key (Recommended)">
+    <ParamField path="CLOUDSTIC_SFTP_KEY" type="string">
+      Path to SSH private key file (PEM format)
+    </ParamField>
+
+    ```bash
+    # Using SSH key authentication
+    export CLOUDSTIC_SFTP_KEY=~/.ssh/id_rsa
+
+    cloudstic init \
+      -store sftp \
+      -sftp-host backup.example.com \
+      -sftp-user backupuser \
+      -store-path /backup/cloudstic
+    ```
+
+    <Note>
+    SSH keys provide the most secure authentication. Ensure the private key has proper permissions: `chmod 600 ~/.ssh/id_rsa`
+    </Note>
+  </Tab>
+
+  <Tab title="Password">
+    <ParamField path="CLOUDSTIC_SFTP_PASSWORD" type="string">
+      SSH password
+    </ParamField>
+
+    ```bash
+    # Using password authentication
+    export CLOUDSTIC_SFTP_PASSWORD=secretpassword
+
+    cloudstic init \
+      -store sftp \
+      -sftp-host backup.example.com \
+      -sftp-user backupuser \
+      -store-path /backup/cloudstic
+    ```
+
+    <Warning>
+    Avoid hardcoding passwords. Use environment variables or a secure secret management system.
+    </Warning>
+  </Tab>
+
+  <Tab title="SSH Agent">
+    If neither key nor password is provided, Cloudstic will attempt to use the SSH agent:
+
+    ```bash
+    # Start SSH agent and add key
+    eval $(ssh-agent)
+    ssh-add ~/.ssh/id_rsa
+
+    # No explicit credentials needed
+    cloudstic init \
+      -store sftp \
+      -sftp-host backup.example.com \
+      -sftp-user backupuser \
+      -store-path /backup/cloudstic
+    ```
+
+    The SSH agent is automatically detected via `SSH_AUTH_SOCK` environment variable.
+  </Tab>
+</Tabs>
+
+## Examples
+
+<Tabs>
+  <Tab title="Basic Setup">
+    ```bash
+    # Using SSH key
+    export CLOUDSTIC_SFTP_HOST=backup.example.com
+    export CLOUDSTIC_SFTP_USER=backupuser
+    export CLOUDSTIC_SFTP_KEY=~/.ssh/backup_key
+
+    # Initialize repository
+    cloudstic init \
+      -store sftp \
+      -store-path /backup/cloudstic
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Documents
+    ```
+  </Tab>
+
+  <Tab title="Custom Port">
+    ```bash
+    # SSH on non-standard port
+    cloudstic init \
+      -store sftp \
+      -sftp-host backup.example.com \
+      -sftp-port 2222 \
+      -sftp-user backupuser \
+      -sftp-key ~/.ssh/id_rsa \
+      -store-path /backup/cloudstic
+    ```
+  </Tab>
+
+  <Tab title="With Prefix">
+    ```bash
+    # Multiple repositories with different paths
+
+    # Laptop backups
+    cloudstic init \
+      -store sftp \
+      -sftp-host backup.example.com \
+      -sftp-user backupuser \
+      -store-path /backup/laptop
+
+    # Server backups
+    cloudstic init \
+      -store sftp \
+      -sftp-host backup.example.com \
+      -sftp-user backupuser \
+      -store-path /backup/server
+    ```
+  </Tab>
+
+  <Tab title="Automated Backup">
+    ```bash
+    #!/bin/bash
+    # backup.sh - Daily backup script
+
+    set -e
+
+    # SFTP credentials from environment
+    export CLOUDSTIC_SFTP_HOST=backup.example.com
+    export CLOUDSTIC_SFTP_USER=backupuser
+    export CLOUDSTIC_SFTP_KEY=~/.ssh/backup_key
+    export CLOUDSTIC_ENCRYPTION_PASSWORD=$(cat /secure/backup.pwd)
+
+    # Run backup
+    cloudstic backup \
+      -store sftp \
+      -store-path /backup/$(hostname) \
+      -source local \
+      -source-path /home
+
+    # Prune old snapshots
+    cloudstic forget --keep-last 30 --prune
+
+    echo "Backup completed at $(date)"
+    ```
+
+    Schedule with cron:
+    ```cron
+    0 2 * * * /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+    ```
+  </Tab>
+</Tabs>
+
+## Server Setup
+
+### Create Backup User
+
+On the SFTP server, create a dedicated user for backups:
+
+```bash
+# Create user with home directory
+sudo useradd -m -d /home/backupuser -s /bin/bash backupuser
+
+# Create backup directory
+sudo mkdir -p /backup/cloudstic
+sudo chown backupuser:backupuser /backup/cloudstic
+sudo chmod 700 /backup/cloudstic
+```
+
+### Configure SSH Key
+
+```bash
+# Generate SSH key pair (on client)
+ssh-keygen -t ed25519 -f ~/.ssh/backup_key -C "cloudstic-backup"
+
+# Copy public key to server
+ssh-copy-id -i ~/.ssh/backup_key.pub backupuser@backup.example.com
+
+# Or manually:
+# On server:
+sudo -u backupuser mkdir -p /home/backupuser/.ssh
+sudo -u backupuser chmod 700 /home/backupuser/.ssh
+cat >> /home/backupuser/.ssh/authorized_keys << 'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGabc123... cloudstic-backup
+EOF
+sudo chown -R backupuser:backupuser /home/backupuser/.ssh
+sudo chmod 600 /home/backupuser/.ssh/authorized_keys
+```
+
+### Restrict Access (Optional)
+
+For additional security, restrict the backup user to SFTP only:
+
+```bash
+# Edit /etc/ssh/sshd_config
+sudo nano /etc/ssh/sshd_config
+```
+
+Add at the end:
+```
+Match User backupuser
+    ForceCommand internal-sftp
+    ChrootDirectory /backup
+    PermitTunnel no
+    AllowAgentForwarding no
+    AllowTcpForwarding no
+    X11Forwarding no
+```
+
+Restart SSH:
+```bash
+sudo systemctl restart sshd
+```
+
+<Note>
+With `ChrootDirectory`, the backup user is confined to `/backup` and cannot access other parts of the filesystem.
+</Note>
+
+## Features
+
+### Atomic Writes
+
+The SFTP store ensures safe writes:
+
+1. Data is written to a temporary file with `.tmp` suffix
+2. `PosixRename` atomically moves the temp file to final location
+3. Interrupted writes never corrupt existing data
+
+### Directory Auto-Creation
+
+The SFTP store automatically creates directories as needed:
+
+```go
+func mkdirAllSFTP(c *sftp.Client, dir string) error
+```
+
+This handles:
+- Nested directory creation
+- Chroot environments with read-only parent directories
+- Race conditions with concurrent operations
+
+### Connection Management
+
+SFTP connections are maintained for the duration of the operation:
+
+- **Single persistent connection** per operation
+- **Reused for all file operations** (Put, Get, List)
+- **Automatically closed** when operation completes
+
+## Performance
+
+### Upload Speed
+
+SFTP performance depends on:
+
+- **Network latency**: Higher latency reduces throughput
+- **CPU (encryption)**: SSH encryption is CPU-intensive
+- **Disk I/O**: Both client and server disk speed matter
+
+**Typical speeds:**
+- LAN (1 Gbps): 50-100 MB/s
+- Internet (100 Mbps): 8-12 MB/s
+- High latency: Limited by round-trip time
+
+### Optimization Tips
+
+<Tabs>
+  <Tab title="Compression">
+    Cloudstic already compresses data with zstd. For additional SSH-level compression:
+
+    ```bash
+    # Add to ~/.ssh/config
+    Host backup.example.com
+        Compression yes
+        CompressionLevel 6
+    ```
+
+    This can help over slow connections but adds CPU overhead.
+  </Tab>
+
+  <Tab title="Cipher Selection">
+    Use faster ciphers in `~/.ssh/config`:
+
+    ```bash
+    Host backup.example.com
+        Ciphers chacha20-poly1305@openssh.com,aes128-gcm@openssh.com
+    ```
+
+    ChaCha20 is typically faster than AES on systems without AES-NI.
+  </Tab>
+
+  <Tab title="ControlMaster">
+    Reuse SSH connections for multiple operations:
+
+    ```bash
+    # Add to ~/.ssh/config
+    Host backup.example.com
+        ControlMaster auto
+        ControlPath ~/.ssh/control-%r@%h:%p
+        ControlPersist 10m
+    ```
+
+    This eliminates connection overhead for repeated backups.
+  </Tab>
+</Tabs>
+
+## Troubleshooting
+
+### Permission Denied
+
+If you see "permission denied" errors:
+
+```bash
+# Test SSH connection
+ssh -i ~/.ssh/backup_key backupuser@backup.example.com
+
+# Check key permissions
+chmod 600 ~/.ssh/backup_key
+
+# Verify authorized_keys on server
+ssh backupuser@backup.example.com 'cat ~/.ssh/authorized_keys'
+```
+
+### Connection Refused
+
+If the connection is refused:
+
+```bash
+# Test connectivity
+telnet backup.example.com 22
+
+# Check SSH service on server
+sudo systemctl status sshd
+
+# Check firewall
+sudo ufw status
+sudo firewall-cmd --list-all
+```
+
+### Chroot Issues
+
+If using `ChrootDirectory`, ensure:
+
+```bash
+# Chroot directory must be owned by root
+sudo chown root:root /backup
+sudo chmod 755 /backup
+
+# User directory inside can be owned by user
+sudo chown backupuser:backupuser /backup/cloudstic
+```
+
+### Authentication Failed
+
+If authentication fails with no clear error:
+
+```bash
+# Enable verbose SSH logging
+ssh -vvv -i ~/.ssh/backup_key backupuser@backup.example.com
+
+# Check server logs
+sudo tail -f /var/log/auth.log  # Debian/Ubuntu
+sudo tail -f /var/log/secure    # RHEL/CentOS
+```
+
+### Slow Performance
+
+If backups are slow:
+
+1. **Test network speed**: `iperf3 -c backup.example.com`
+2. **Check latency**: `ping backup.example.com`
+3. **Enable compression**: Add `Compression yes` to SSH config
+4. **Use faster cipher**: `chacha20-poly1305@openssh.com`
+5. **Check disk I/O**: `iostat -x 1` on both client and server
+
+## Security Considerations
+
+### Key Management
+
+- Use separate SSH keys for backups (not your personal key)
+- Set appropriate key permissions: `chmod 600 ~/.ssh/backup_key`
+- Use Ed25519 keys for better security and performance
+- Rotate keys periodically
+
+### Server Hardening
+
+```bash
+# Disable password authentication for backup user
+# In /etc/ssh/sshd_config:
+Match User backupuser
+    PasswordAuthentication no
+    PubkeyAuthentication yes
+```
+
+### Network Security
+
+- Use firewall rules to restrict access to backup server
+- Consider VPN for backups over untrusted networks
+- Monitor authentication logs for suspicious activity
+
+### Data at Rest
+
+Cloudstic encrypts all data client-side before uploading:
+
+- **Encryption**: AES-256-GCM
+- **Key derivation**: HKDF with per-repository master key
+- **Metadata**: Also encrypted (except `config` and `keys/` prefix)
+
+Even if the SFTP server is compromised, backup data remains encrypted.
+
+## Comparison with Other Backends
+
+<Tabs>
+  <Tab title="SFTP vs Local">
+    **SFTP Advantages:**
+    - Remote storage (off-site backup)
+    - Accessible over network
+    - No direct server access needed
+
+    **Local Advantages:**
+    - Faster (no network overhead)
+    - Simpler setup
+    - No SSH configuration
+  </Tab>
+
+  <Tab title="SFTP vs S3/B2">
+    **SFTP Advantages:**
+    - No cloud costs
+    - Use existing infrastructure
+    - Full control over data location
+    - No API rate limits
+
+    **S3/B2 Advantages:**
+    - Highly available and durable
+    - Scalable storage
+    - Pay-as-you-go pricing
+    - Managed service (no maintenance)
+  </Tab>
+</Tabs>
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Backup Command" icon="upload" href="/commands/backup">
+    Create backups to SFTP
+  </Card>
+  <Card title="Local Storage" icon="folder" href="/storage/local">
+    Local filesystem storage
+  </Card>
+  <Card title="S3 Storage" icon="aws" href="/storage/s3">
+    Cloud storage alternative
+  </Card>
+  <Card title="Encryption" icon="lock" href="/security/encryption">
+    Data encryption details
+  </Card>
+</CardGroup>

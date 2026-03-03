@@ -1,0 +1,395 @@
+---
+title: Installation
+description: Install Cloudstic CLI on macOS, Linux, Windows, or build from source
+---
+
+## Choose Your Platform
+
+Cloudstic CLI provides native installation methods for all major platforms. Choose the method that works best for your system:
+
+<Tabs>
+  <Tab title="macOS">
+    ### Homebrew (Recommended)
+    
+    The easiest way to install Cloudstic on macOS is via Homebrew:
+    
+    ```bash
+    # Install Cloudstic
+    brew install cloudstic/tap/cloudstic
+    ```
+    
+    <Accordion title="Upgrade and Uninstall">
+      ```bash
+      # Upgrade to the latest version
+      brew upgrade cloudstic
+      
+      # Uninstall
+      brew uninstall cloudstic
+      ```
+    </Accordion>
+    
+    ### Pre-built Binary
+    
+    Download the latest release for your architecture:
+    
+    <CodeGroup>
+    ```bash Apple Silicon (M1/M2/M3)
+    curl -L https://github.com/cloudstic/cli/releases/latest/download/cloudstic_darwin_arm64.tar.gz | tar xz
+    sudo mv cloudstic /usr/local/bin/
+    chmod +x /usr/local/bin/cloudstic
+    ```
+    
+    ```bash Intel
+    curl -L https://github.com/cloudstic/cli/releases/latest/download/cloudstic_darwin_amd64.tar.gz | tar xz
+    sudo mv cloudstic /usr/local/bin/
+    chmod +x /usr/local/bin/cloudstic
+    ```
+    </CodeGroup>
+  </Tab>
+  
+  <Tab title="Linux">
+    ### Homebrew
+    
+    Install via Homebrew on Linux:
+    
+    ```bash
+    # Install Cloudstic
+    brew install cloudstic/tap/cloudstic
+    
+    # Upgrade to the latest version
+    brew upgrade cloudstic
+    ```
+    
+    ### Pre-built Binary
+    
+    Download the latest release for your architecture:
+    
+    <CodeGroup>
+    ```bash x86_64 (amd64)
+    curl -L https://github.com/cloudstic/cli/releases/latest/download/cloudstic_linux_amd64.tar.gz | tar xz
+    sudo mv cloudstic /usr/local/bin/
+    chmod +x /usr/local/bin/cloudstic
+    ```
+    
+    ```bash ARM64
+    curl -L https://github.com/cloudstic/cli/releases/latest/download/cloudstic_linux_arm64.tar.gz | tar xz
+    sudo mv cloudstic /usr/local/bin/
+    chmod +x /usr/local/bin/cloudstic
+    ```
+    </CodeGroup>
+    
+    <Note>
+      Binaries are statically linked and have no external dependencies beyond glibc.
+    </Note>
+  </Tab>
+  
+  <Tab title="Windows">
+    ### Winget (Recommended)
+    
+    Install via Windows Package Manager:
+    
+    ```powershell
+    # Install Cloudstic
+    winget install Cloudstic.CLI
+    ```
+    
+    <Accordion title="Upgrade and Uninstall">
+      ```powershell
+      # Upgrade to the latest version
+      winget upgrade Cloudstic.CLI
+      
+      # Uninstall
+      winget uninstall Cloudstic.CLI
+      ```
+    </Accordion>
+    
+    ### Manual Download
+    
+    1. Download the Windows binary from [GitHub Releases](https://github.com/cloudstic/cli/releases)
+    2. Extract the `cloudstic.exe` file
+    3. Add the executable to your `PATH` or run it from the extraction directory
+    
+    <Tip>
+      To add Cloudstic to your PATH permanently, search for "Environment Variables" in Windows settings and add the directory containing `cloudstic.exe` to your system PATH.
+    </Tip>
+  </Tab>
+  
+  <Tab title="Go">
+    ### Install with Go Toolchain
+    
+    If you have Go 1.21 or later installed:
+    
+    ```bash
+    go install github.com/cloudstic/cli/cmd/cloudstic@latest
+    ```
+    
+    The binary will be installed to `$GOPATH/bin/cloudstic` (or `$HOME/go/bin/cloudstic` by default).
+    
+    <Warning>
+      Make sure `$GOPATH/bin` is in your `PATH` to run `cloudstic` from anywhere.
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Verify Installation
+
+Confirm that Cloudstic is installed correctly:
+
+```bash
+cloudstic version
+```
+
+You should see output similar to:
+
+```
+cloudstic 1.2.0 (commit a1b2c3d, built 2025-03-01T10:30:00Z)
+```
+
+<Check>
+  **Installation successful!** You're ready to initialize your first repository.
+</Check>
+
+## Build from Source
+
+For developers or users who want to build from the latest source code:
+
+<Steps>
+  <Step title="Install Go 1.21 or later">
+    Download and install Go from [golang.org](https://golang.org/dl/)
+  </Step>
+  
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/cloudstic/cli.git
+    cd cli
+    ```
+  </Step>
+  
+  <Step title="Build the binary">
+    ```bash
+    go build -o cloudstic ./cmd/cloudstic
+    ```
+    
+    This creates a `cloudstic` binary in the current directory.
+  </Step>
+  
+  <Step title="Install the binary (optional)">
+    ```bash
+    sudo mv cloudstic /usr/local/bin/
+    ```
+    
+    Or add the current directory to your `PATH`.
+  </Step>
+</Steps>
+
+<Accordion title="Run the test suite">
+  ```bash
+  # Run all tests
+  go test -v -race -count=1 ./...
+  
+  # Run the full check script (fmt + lint + test + coverage)
+  ./scripts/check.sh
+  ```
+  
+  <Note>
+    E2E tests require Docker for Testcontainers (MinIO, SFTP). They skip gracefully if Docker is unavailable.
+  </Note>
+</Accordion>
+
+## Shell Completions
+
+Cloudstic supports tab-completion for commands, flags, and values in bash, zsh, and fish.
+
+<Tabs>
+  <Tab title="Bash">
+    ### Load completion for current session
+    
+    ```bash
+    source <(cloudstic completion bash)
+    ```
+    
+    ### Load completion permanently
+    
+    ```bash
+    echo 'source <(cloudstic completion bash)' >> ~/.bashrc
+    ```
+    
+    <Note>
+      Bash completions require the `bash-completion` package:
+      - **macOS**: `brew install bash-completion`
+      - **Debian/Ubuntu**: `apt install bash-completion`
+    </Note>
+  </Tab>
+  
+  <Tab title="Zsh">
+    ### Load completion for current session
+    
+    ```zsh
+    source <(cloudstic completion zsh)
+    ```
+    
+    ### Load completion permanently
+    
+    Add to `~/.zshrc`:
+    
+    ```zsh
+    echo 'source <(cloudstic completion zsh)' >> ~/.zshrc
+    ```
+    
+    **Alternative**: Place in your `$fpath`:
+    
+    ```zsh
+    cloudstic completion zsh > "${fpath[1]}/_cloudstic"
+    ```
+    
+    <Tip>
+      You may need to run `compinit` or start a new shell for changes to take effect.
+    </Tip>
+  </Tab>
+  
+  <Tab title="Fish">
+    ### Load completion for current session
+    
+    ```fish
+    cloudstic completion fish | source
+    ```
+    
+    ### Load completion permanently
+    
+    ```fish
+    cloudstic completion fish > ~/.config/fish/completions/cloudstic.fish
+    ```
+  </Tab>
+</Tabs>
+
+## Configuration Directory
+
+Cloudstic stores OAuth tokens and state files in a platform-specific directory:
+
+| Platform | Default Path |
+|----------|-------------|
+| **Linux** | `~/.config/cloudstic/` |
+| **macOS** | `~/Library/Application Support/cloudstic/` |
+| **Windows** | `%AppData%\cloudstic\` |
+
+<Tip>
+  Override the config directory by setting the `CLOUDSTIC_CONFIG_DIR` environment variable:
+  
+  ```bash
+  export CLOUDSTIC_CONFIG_DIR=/custom/path/to/config
+  ```
+</Tip>
+
+This directory contains:
+- **`google_token.json`** — Google Drive OAuth token (if using Google Drive sources)
+- **`onedrive_token.json`** — OneDrive OAuth token (if using OneDrive sources)
+- **State files** — For incremental backups (change tokens, delta links)
+
+## Environment Variables
+
+Simplify your workflow by setting default values via environment variables. This is especially useful for automation:
+
+```bash ~/.bashrc or ~/.zshrc
+# Storage backend configuration
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-backup-bucket
+export CLOUDSTIC_STORE_PREFIX="laptop/"
+
+# S3 credentials (or use AWS CLI profiles)
+export AWS_ACCESS_KEY_ID=your-access-key
+export AWS_SECRET_ACCESS_KEY=your-secret-key
+export CLOUDSTIC_S3_REGION=us-east-1
+
+# Encryption
+export CLOUDSTIC_ENCRYPTION_PASSWORD="my secure passphrase"
+
+# Source defaults
+export CLOUDSTIC_SOURCE=gdrive-changes
+```
+
+With these set, commands become much shorter:
+
+```bash
+# Instead of:
+cloudstic backup -store s3 -store-path my-bucket -source gdrive-changes -encryption-password "..."
+
+# Just run:
+cloudstic backup
+```
+
+<Note>
+  See the [User Guide](https://github.com/cloudstic/cli/blob/main/docs/user-guide.md#environment-variables) for the complete list of supported environment variables.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Initialize your first repository and create a backup
+  </Card>
+  
+  <Card title="User Guide" icon="book" href="https://github.com/cloudstic/cli/blob/main/docs/user-guide.md">
+    Explore all commands and advanced features
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Command not found after installation">
+    **Problem**: Shell can't find the `cloudstic` binary.
+    
+    **Solution**: Make sure the installation directory is in your `PATH`:
+    
+    ```bash
+    # Check your PATH
+    echo $PATH
+    
+    # Add /usr/local/bin to PATH (if missing)
+    export PATH="/usr/local/bin:$PATH"
+    
+    # For Go installs, ensure GOPATH/bin is in PATH
+    export PATH="$HOME/go/bin:$PATH"
+    ```
+    
+    Add the export statement to your `~/.bashrc`, `~/.zshrc`, or `~/.profile` to make it permanent.
+  </Accordion>
+  
+  <Accordion title="Permission denied when running cloudstic">
+    **Problem**: Binary is not executable.
+    
+    **Solution**: Add execute permissions:
+    
+    ```bash
+    chmod +x /usr/local/bin/cloudstic
+    ```
+  </Accordion>
+  
+  <Accordion title="Homebrew tap not found">
+    **Problem**: `brew install cloudstic/tap/cloudstic` fails.
+    
+    **Solution**: Update Homebrew and try again:
+    
+    ```bash
+    brew update
+    brew install cloudstic/tap/cloudstic
+    ```
+  </Accordion>
+  
+  <Accordion title="Go version too old">
+    **Problem**: Build fails with Go version error.
+    
+    **Solution**: Upgrade Go to version 1.21 or later:
+    
+    ```bash
+    # Check current version
+    go version
+    
+    # Download latest from https://golang.org/dl/
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  If you encounter issues not covered here, please report them at [github.com/cloudstic/cli/issues](https://github.com/cloudstic/cli/issues).
+</Warning>

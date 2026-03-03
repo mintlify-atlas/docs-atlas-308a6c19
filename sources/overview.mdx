@@ -1,0 +1,157 @@
+---
+title: Sources Overview
+description: Overview of all supported backup sources in Cloudstic CLI
+---
+
+A **source** is the origin of files during a backup. Cloudstic supports multiple source types, allowing you to back up data from local filesystems, remote servers, and cloud storage providers.
+
+## Available Sources
+
+Cloudstic supports the following source types:
+
+<CardGroup cols={2}>
+  <Card title="Local Directory" icon="folder" href="/sources/local">
+    Back up files from your local filesystem
+  </Card>
+  <Card title="SFTP Server" icon="server" href="/sources/sftp">
+    Back up files from a remote SFTP server
+  </Card>
+  <Card title="Google Drive" icon="google" href="/sources/google-drive">
+    Back up files from Google Drive (My Drive or Shared Drives)
+  </Card>
+  <Card title="OneDrive" icon="microsoft" href="/sources/onedrive">
+    Back up files from Microsoft OneDrive
+  </Card>
+</CardGroup>
+
+## How Sources Work
+
+All sources implement a common interface that provides:
+
+- **File enumeration** — Walk through all files and folders
+- **File streaming** — Read file content for backup
+- **Metadata** — Collect file attributes (size, modified time, owner)
+- **Incremental support** — Some sources support delta-based backups
+
+### Full vs. Incremental Backups
+
+**Full scan sources** enumerate all files on every backup:
+- `local` — Local filesystem
+- `sftp` — SFTP server
+- `gdrive` — Google Drive
+- `onedrive` — OneDrive
+
+**Incremental sources** use provider APIs to fetch only changed files:
+- `gdrive-changes` — Google Drive with Changes API (recommended)
+- `onedrive-changes` — OneDrive with Delta API
+
+<Note>
+Incremental sources are significantly faster for subsequent backups because they only fetch changes since the last backup, rather than scanning the entire source.
+</Note>
+
+## Common Configuration
+
+### Exclude Patterns
+
+All sources support exclude patterns using gitignore syntax:
+
+```bash
+cloudstic backup -source local -source-path ./documents \
+  -exclude "*.tmp" \
+  -exclude ".git/" \
+  -exclude "node_modules/"
+```
+
+You can also load patterns from a file:
+
+```bash
+cloudstic backup -source local -source-path ./documents \
+  -exclude-file .backupignore
+```
+
+**Example `.backupignore` file:**
+```gitignore
+# Temporary files
+*.tmp
+*.log
+*.cache
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Development
+node_modules/
+.git/
+__pycache__/
+*.pyc
+
+# Build artifacts
+dist/
+build/
+target/
+```
+
+### Environment Variables
+
+Common source-related environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `CLOUDSTIC_SOURCE` | Default source type |
+| `CLOUDSTIC_SOURCE_PATH` | Default source path (for local/SFTP) |
+| `CLOUDSTIC_DRIVE_ID` | Google Drive shared drive ID |
+| `CLOUDSTIC_ROOT_FOLDER` | Google Drive root folder ID |
+
+## Source Information
+
+Each backup snapshot stores source metadata that identifies where the data came from:
+
+- **Type** — Source type (e.g., `local`, `gdrive`, `onedrive`)
+- **Account** — Account identifier (hostname, email, user@host)
+- **Path** — Source-specific path or location
+
+This information is used to:
+- Find the previous snapshot from the same source for incremental comparison
+- Group snapshots in retention policies
+- Display backup history
+
+## Choosing a Source Type
+
+### Use Local when:
+- Backing up files on the same machine as Cloudstic
+- You want the fastest backup performance
+- Files are on directly mounted storage
+
+### Use SFTP when:
+- Backing up files from a remote server
+- You have SSH access to the server
+- You want to avoid installing Cloudstic on the remote machine
+
+### Use Google Drive when:
+- Backing up cloud files from Google Drive
+- You want to preserve Google Drive's folder structure
+- You need to back up Shared Drives
+- Use `gdrive-changes` for faster incremental backups
+
+### Use OneDrive when:
+- Backing up cloud files from Microsoft OneDrive
+- You want to preserve OneDrive's folder structure
+- Use `onedrive-changes` for faster incremental backups
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Local Source" icon="folder" href="/sources/local">
+    Learn about backing up local directories
+  </Card>
+  <Card title="SFTP Source" icon="server" href="/sources/sftp">
+    Learn about backing up remote servers
+  </Card>
+  <Card title="Google Drive" icon="google" href="/sources/google-drive">
+    Learn about backing up Google Drive
+  </Card>
+  <Card title="OneDrive" icon="microsoft" href="/sources/onedrive">
+    Learn about backing up OneDrive
+  </Card>
+</CardGroup>

@@ -1,0 +1,245 @@
+---
+title: cloudstic prune
+description: Remove unreachable data chunks and reclaim storage space
+---
+
+## Overview
+
+The `cloudstic prune` command removes unreachable objects from the repository using mark-and-sweep garbage collection. After deleting snapshots with `forget`, their associated chunks, content manifests, and metadata become unreachable. Prune identifies and deletes these orphaned objects to reclaim storage space.
+
+## Usage
+
+```bash
+cloudstic prune [options]
+```
+
+## How It Works
+
+Prune operates in two phases:
+
+1. **Mark Phase** — Walks all existing snapshots and marks reachable objects:
+   - Snapshot objects (`snapshot/*`)
+   - HAMT tree nodes (`node/*`)
+   - File metadata (`filemeta/*`)
+   - Content manifests (`content/*`)
+   - Data chunks (`chunk/*`)
+
+2. **Sweep Phase** — Scans all objects in the repository and deletes those not marked as reachable.
+
+After sweep, prune also repacks fragmented packfiles if packfile storage is enabled (default). Any packfile that is more than 30% empty will be consolidated to reduce storage overhead.
+
+## Options
+
+<ParamField path="-dry-run" type="flag">
+  Show what would be deleted without actually deleting anything. Useful for previewing the impact before running prune.
+  
+  **Default:** `false`
+</ParamField>
+
+<ParamField path="-verbose" type="flag">
+  Log each object as it's processed. Shows every deleted object key during the sweep phase.
+  
+  **Default:** `false`
+</ParamField>
+
+### Global Options
+
+
+- `-store`, `-store-path` — Storage backend configuration
+- `-encryption-password`, `-encryption-key` — Repository credentials
+- `-quiet` — Suppress progress bars
+- `-debug` — Log every store request
+
+## Output
+
+Prune displays:
+- **Objects scanned** — Total number of objects examined
+- **Objects deleted** — Number of unreachable objects removed
+- **Space reclaimed** — Total storage space freed (actual prune only)
+
+### Example Output (Dry Run)
+
+```
+Marking reachable objects... done
+Found 42 unique snapshots
+
+Scanning unreachable objects (dry run)... done
+
+Prune dry run complete.
+  Objects scanned:       8,421
+  Objects would delete:  3,204
+```
+
+### Example Output (Actual Prune)
+
+```
+Marking reachable objects... done
+Found 42 unique snapshots
+
+Sweeping unreachable objects... done
+Repacking fragmented index files... done
+
+Prune complete.
+  Objects scanned:  8,421
+  Objects deleted:  3,204
+  Space reclaimed:  2.4 GiB
+```
+
+## Examples
+
+### Preview what will be pruned
+
+```bash
+cloudstic prune -dry-run
+```
+
+Use this to verify what will be deleted before running the actual prune.
+
+### Prune and see details
+
+```bash
+cloudstic prune -verbose
+```
+
+Shows each object being deleted:
+
+```
+Sweeping unreachable objects...
+Deleted: chunk/a3f4c2e1d8b9...
+Deleted: content/f7e6d5c4b3a2...
+Deleted: filemeta/8b7a6c5d4e3f...
+...
+```
+
+### Prune with local store
+
+```bash
+cloudstic prune \
+  -store local \
+  -store-path ./my-backup-repo
+```
+
+### Prune with S3 backend
+
+```bash
+cloudstic prune \
+  -store s3 \
+  -store-path my-bucket \
+  -s3-region us-west-2
+```
+
+## When to Run Prune
+
+<Note>
+  **Prune should be run after using `forget` to remove snapshots.** Deleting snapshots with `forget` does not immediately free storage — it only removes the snapshot objects themselves. The actual data chunks remain until prune performs garbage collection.
+</Note>
+
+Typical workflow:
+
+1. **Remove old snapshots:**
+   ```bash
+   cloudstic forget --keep-last 10 --keep-daily 7
+   ```
+
+2. **Reclaim storage:**
+   ```bash
+   cloudstic prune
+   ```
+
+Alternatively, use `forget` with the `-prune` flag to automatically prune after forgetting:
+
+```bash
+cloudstic forget --keep-last 10 --prune
+```
+
+## Difference Between Prune and Forget
+
+| Command | Purpose | What It Deletes |
+|---------|---------|----------------|
+| **forget** | Remove specific snapshots from history | Snapshot objects only (`snapshot/*`) |
+| **prune** | Reclaim storage from unreachable data | Orphaned chunks, content, metadata, and HAMT nodes |
+
+**Key concept:** `forget` makes data *unreachable* by removing the snapshot references. `prune` then *reclaims storage* by deleting the unreachable data.
+
+## Performance Considerations
+
+- **Mark phase** complexity scales with the number of snapshots and files
+- **Sweep phase** must scan all objects with specific prefixes (`chunk/`, `content/`, `filemeta/`, `node/`, `snapshot/`)
+- For large repositories, prune can take several minutes to complete
+- The operation acquires an exclusive lock on the repository
+- Use `-dry-run` first to estimate the impact
+
+<Note>
+  **Repository Lock:** Prune acquires an exclusive lock to prevent concurrent modifications. Other operations (backup, restore, list) will wait until prune completes.
+</Note>
+
+## Packfile Repacking
+
+When packfile storage is enabled (default for S3/B2 backends), prune automatically repacks fragmented packfiles:
+
+- Any packfile that is more than 30% empty is consolidated
+- Small objects (less than 512KB) are bundled into 8MB packfiles to reduce API calls
+- Repacking reclaims additional space and improves performance
+- The repacking phase runs after sweep completes
+
+## Advanced Usage
+
+### Prune specific store with debug logging
+
+```bash
+cloudstic prune \
+  -store s3 \
+  -store-path my-bucket \
+  -s3-region us-east-1 \
+  -debug
+```
+
+Debug mode shows every store operation:
+
+```
+[store] GET snapshot/a3f4c2e1d8b9... 4.2KB 125ms
+[store] DELETE chunk/f7e6d5c4b3a2... 2.1MB 89ms
+...
+```
+
+### Dry run with verbose output
+
+```bash
+cloudstic prune -dry-run -verbose
+```
+
+Shows exactly what would be deleted without performing the deletion.
+
+## Error Handling
+
+### Repository locked
+
+If another operation is running:
+
+```
+Failed to init store: repository locked by backup operation
+```
+
+**Solution:** Wait for the other operation to complete, or use `break-lock` if you're certain no operations are running.
+
+### Missing objects during mark phase
+
+If prune encounters missing objects referenced by snapshots:
+
+```
+mark snapshot snapshot/abc123: get filemeta/def456: object not found
+```
+
+**This indicates repository corruption.** Run `cloudstic check` to diagnose integrity issues.
+
+## Related Commands
+
+- [`forget`](/commands/forget) — Remove specific snapshots from history
+- [`check`](/commands/check) — Verify repository integrity
+- [`list`](/commands/list) — List all snapshots to see what would be preserved
+
+## See Also
+
+- [Retention Policies](/guides/retention-policies) — Automate snapshot cleanup
+- [Storage Backends](/storage/overview) — Configure where data is stored
+- [Repository Maintenance](/guides/first-backup) — Best practices for long-term repository health

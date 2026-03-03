@@ -1,0 +1,414 @@
+---
+title: 'cloudstic check'
+description: 'Verify repository integrity by validating the reference chain and optionally re-hashing all data'
+---
+
+## Overview
+
+The `cloudstic check` command verifies the integrity of your Cloudstic repository by walking the full reference chain from `index/latest` through snapshots, HAMT nodes, filemeta, content, and chunks. It detects:
+
+- Missing objects
+- Corrupt objects (hash mismatch)
+- Unreadable objects (store errors, decryption failures)
+- Broken references (dangling pointers)
+
+<Tip>
+  Run `check` periodically (e.g., after prune operations or before critical restores) to ensure your backup data is intact.
+</Tip>
+
+## Basic Usage
+
+```bash
+cloudstic check [snapshot_id] [options]
+```
+
+**Check all snapshots:**
+```bash
+cloudstic check
+```
+
+**Check a specific snapshot:**
+```bash
+cloudstic check abc123def456...
+```
+
+## Terminal Output Examples
+
+### Successful Check (All Snapshots)
+
+```bash
+$ cloudstic check
+
+Repository check complete.
+  Snapshots checked:  5
+  Objects verified:   1247
+  Errors found:       0
+
+No errors found — repository is healthy.
+```
+
+### Successful Check (Single Snapshot)
+
+```bash
+$ cloudstic check -snapshot abc123def456
+
+Repository check complete.
+  Snapshots checked:  1
+  Objects verified:   312
+  Errors found:       0
+
+No errors found — repository is healthy.
+```
+
+### Check with Errors
+
+```bash
+$ cloudstic check
+
+Repository check complete.
+  Snapshots checked:  5
+  Objects verified:   1247
+  Errors found:       3
+
+  [missing] chunk/7a3d8f2e1c9b4a6f: object not found in store
+  [corrupt] filemeta/4b2c9d8a3e1f7g5h: hash mismatch (expected 4b2c9d8a3e1f7g5h, got 5c3d8e9b4f2a8i6j)
+  [unreadable] content/9e8f7d6c5b4a3210: failed to decrypt: cipher: message authentication failed
+
+```
+
+<Warning>
+  If `check` reports errors, your repository may have data loss or corruption. Investigate immediately and restore from a known-good backup if necessary.
+</Warning>
+
+### Deep Check with Data Verification
+
+```bash
+$ cloudstic check -read-data -verbose
+[verbose] Checking snapshot/abc123def456...
+[verbose] Walking HAMT tree (root: node/789abc...)
+[verbose] Verifying filemeta/4b2c9d8a3e1f7g5h...
+[verbose] Re-hashing chunk/7a3d8f2e1c9b4a6f (2.3 MiB)...
+...
+
+Repository check complete.
+  Snapshots checked:  5
+  Objects verified:   1247
+  Chunks re-hashed:   438
+  Errors found:       0
+
+No errors found — repository is healthy.
+```
+
+## Command Flags
+
+<ParamField path="-read-data" type="boolean" default="false">
+  Re-hash all chunk data to verify byte-level integrity. This performs a **full read** of every chunk object and compares the computed SHA-256 hash against the object key.
+  
+  <Note>
+    This is a deep verification mode that downloads and hashes all backup data. It can be **slow and expensive** on cloud storage backends (e.g., S3 egress charges). Use for critical integrity checks or suspected corruption.
+  </Note>
+</ParamField>
+
+<ParamField path="-snapshot" type="string" default="">
+  Check only the specified snapshot reference. Accepts:
+  - Full snapshot hash: `abc123def456...`
+  - Short hash prefix: `abc123`
+  - Snapshot ref format: `snapshot/abc123def456...`
+  
+  If omitted, checks **all** snapshots in the repository.
+</ParamField>
+
+<ParamField path="-verbose" type="boolean" default="false">
+  Log detailed information about each object being verified. Shows the reference chain walk and individual object checks.
+</ParamField>
+
+### Global Flags
+
+<ParamField path="-store" type="string" default="local" env="CLOUDSTIC_STORE">
+  Storage backend type: `local`, `b2`, `s3`, `sftp`.
+</ParamField>
+
+<ParamField path="-store-path" type="string" default="./backup_store" env="CLOUDSTIC_STORE_PATH">
+  Local/SFTP path or B2/S3 bucket name.
+</ParamField>
+
+<ParamField path="-store-prefix" type="string" default="" env="CLOUDSTIC_STORE_PREFIX">
+  Key prefix for B2/S3 objects.
+</ParamField>
+
+<ParamField path="-encryption-key" type="string" default="" env="CLOUDSTIC_ENCRYPTION_KEY">
+  Platform key (64 hex chars = 32 bytes).
+</ParamField>
+
+<ParamField path="-encryption-password" type="string" default="" env="CLOUDSTIC_ENCRYPTION_PASSWORD">
+  Repository password for encrypted repositories.
+</ParamField>
+
+<ParamField path="-recovery-key" type="string" default="" env="CLOUDSTIC_RECOVERY_KEY">
+  24-word BIP39 recovery phrase.
+</ParamField>
+
+<ParamField path="-kms-key-arn" type="string" default="" env="CLOUDSTIC_KMS_KEY_ARN">
+  AWS KMS key ARN for KMS-encrypted repositories.
+</ParamField>
+
+<ParamField path="-quiet" type="boolean" default="false">
+  Suppress progress output (keeps final summary).
+</ParamField>
+
+<ParamField path="-debug" type="boolean" default="false">
+  Log every store request (network calls, timing, sizes).
+</ParamField>
+
+## Examples
+
+### Quick Integrity Check
+
+```bash
+cloudstic check
+```
+
+Verifies reference chain integrity for all snapshots without reading chunk data.
+
+### Deep Byte-Level Verification
+
+```bash
+cloudstic check -read-data
+```
+
+<Warning>
+  This downloads and hashes **all** backup data. On large repositories with cloud storage, expect significant network usage and egress charges.
+</Warning>
+
+### Check Specific Snapshot
+
+```bash
+cloudstic check abc123def456
+```
+
+or
+
+```bash
+cloudstic check -snapshot abc123def456
+```
+
+### Check with Verbose Logging
+
+```bash
+cloudstic check -verbose
+```
+
+**Output:**
+```
+[verbose] Loading index/latest...
+[verbose] Checking snapshot/abc123def456... (seq=1, created=2026-03-01T10:30:00Z)
+[verbose] Walking HAMT tree (root: node/789abc...)
+[verbose] Verifying filemeta/4b2c9d8a3e1f7g5h (Documents/report.pdf)
+[verbose] Verifying content/9e8f7d6c5b4a3210...
+[verbose] Checking chunk refs: 3 chunks
+...
+
+Repository check complete.
+  Snapshots checked:  1
+  Objects verified:   87
+  Errors found:       0
+
+No errors found — repository is healthy.
+```
+
+### Check Remote S3 Repository
+
+```bash
+export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+cloudstic check \
+  -store s3 \
+  -store-path my-backup-bucket \
+  -s3-region us-west-2 \
+  -encryption-password "my-passphrase"
+```
+
+### Deep Check with Debug Logging
+
+```bash
+cloudstic check -read-data -debug 2>&1 | tee check.log
+```
+
+Logs all store operations (GET requests, timing, sizes) for troubleshooting network or storage issues.
+
+## How Check Works
+
+### Reference Chain Validation
+
+`cloudstic check` validates the repository by walking the **entire reference graph**:
+
+1. **Load `index/latest`** — Resolve the latest snapshot pointer
+2. **Load snapshot manifest** — Parse snapshot metadata (timestamp, source, HAMT root)
+3. **Walk HAMT tree** — Traverse all internal and leaf nodes
+4. **Verify filemeta** — Check file metadata objects
+5. **Verify content** — Validate content manifests (chunk lists)
+6. **Check chunk references** — Ensure all chunks exist in the store
+
+<Note>
+  By default, `check` verifies that all referenced objects **exist** and have correct **content-addressed hashes** (object key matches SHA-256 of content). It does **not** re-read chunk data unless `-read-data` is specified.
+</Note>
+
+### Deep Verification Mode (`-read-data`)
+
+When `-read-data` is enabled, `check` performs **byte-level verification**:
+
+1. Downloads each `chunk/<hash>` object
+2. Decrypts and decompresses the chunk data
+3. Computes SHA-256 hash of the plaintext
+4. Compares against the chunk reference hash
+
+This detects:
+- Silent bit rot in storage
+- Decryption key mismatches
+- Decompression errors
+- Storage backend corruption
+
+<Warning>
+  Deep verification on cloud storage can incur **significant egress charges**. A 500GB repository with 10,000 chunks will download ~500GB. Use sparingly and consider bandwidth/cost implications.
+</Warning>
+
+## Error Types
+
+Check reports three classes of errors:
+
+### Missing Objects
+
+```
+[missing] chunk/7a3d8f2e1c9b4a6f: object not found in store
+```
+
+**Cause:** The object key is referenced but does not exist in the store. This indicates data loss (accidental deletion, incomplete upload, storage backend failure).
+
+**Resolution:** Restore from a backup of the repository itself, or accept data loss for affected files.
+
+### Corrupt Objects
+
+```
+[corrupt] filemeta/4b2c9d8a3e1f7g5h: hash mismatch (expected 4b2c9d8a3e1f7g5h, got 5c3d8e9b4f2a8i6j)
+```
+
+**Cause:** The object exists but its SHA-256 hash does not match the key. This indicates corruption (bit rot, storage bug, incomplete write).
+
+**Resolution:** The object is irrecoverable. Prune the affected snapshot if possible, or restore from an earlier snapshot.
+
+### Unreadable Objects
+
+```
+[unreadable] content/9e8f7d6c5b4a3210: failed to decrypt: cipher: message authentication failed
+```
+
+**Cause:** The object could not be read due to a store error (network failure, permission denied) or decryption failure (wrong key, corrupted ciphertext).
+
+**Resolution:** 
+- Verify encryption credentials are correct
+- Check network connectivity and storage backend health
+- Retry the check operation
+
+## Use Cases
+
+### Periodic Integrity Audits
+
+Run `check` on a schedule (e.g., weekly) to detect corruption early:
+
+```bash
+#!/bin/bash
+# cron: 0 2 * * 0  # Every Sunday at 2 AM
+
+cloudstic check -quiet || {
+  echo "Repository check failed!" | mail -s "Backup Alert" admin@example.com
+}
+```
+
+### Post-Prune Verification
+
+After pruning unused chunks, verify no live data was accidentally deleted:
+
+```bash
+cloudstic prune
+cloudstic check
+```
+
+### Pre-Restore Validation
+
+Before a critical restore operation, ensure the target snapshot is intact:
+
+```bash
+cloudstic check -snapshot abc123 -read-data
+cloudstic restore abc123 -output ./critical-restore.zip
+```
+
+### Disaster Recovery Testing
+
+Validate that an offsite backup repository is readable and complete:
+
+```bash
+# Test S3 DR repository
+cloudstic check \
+  -store s3 \
+  -store-path dr-backups-us-west-1 \
+  -s3-region us-west-1 \
+  -encryption-password "$DR_PASSWORD" \
+  -read-data
+```
+
+## Performance Considerations
+
+### Local Storage
+
+- **Reference check:** Fast (seconds to minutes for large repos)
+- **Deep check (`-read-data`):** Limited by disk I/O (~200-500 MB/s on SSD)
+
+### Cloud Storage (S3, B2)
+
+- **Reference check:** Moderate (depends on latency and object count; ~10-100 ms per object)
+- **Deep check (`-read-data`):** Slow and expensive
+  - S3: ~$0.09/GB egress (AWS → internet)
+  - B2: First 1GB/day free, then ~$0.01/GB
+  - Bandwidth: Limited by connection speed and S3 rate limits
+
+<Tip>
+  For large cloud repositories, run `-read-data` checks **infrequently** (e.g., quarterly) or only for specific snapshots.
+</Tip>
+
+## Troubleshooting
+
+### Check reports errors but I can restore fine
+
+**Possible cause:** Errors are in old snapshots or unreferenced objects.
+
+**Resolution:** Run `cloudstic forget` to remove old snapshots, then `cloudstic prune` to clean up unreferenced objects.
+
+### Check hangs or is very slow
+
+**Possible cause:** Network latency, large HAMT tree, or many small objects.
+
+**Resolution:** 
+- Use `-verbose` to see progress
+- Check network connectivity to storage backend
+- Consider enabling packfiles (`-enable-packfile`) for future backups to reduce object count
+
+### Error: Failed to init store
+
+```
+Failed to init store: no such host
+```
+
+**Resolution:** Verify storage backend credentials and connectivity. Check `-store`, `-store-path`, and backend-specific flags (e.g., `-s3-endpoint`, `-sftp-host`).
+
+## Exit Codes
+
+- **0** — Check succeeded, no errors found
+- **1** — Check failed (errors detected, store initialization failed, or command error)
+
+## Related Commands
+
+- [cloudstic init](/commands/init) — Initialize repository before first check
+- [cloudstic prune](/commands/prune) — Remove unused chunks (run check after pruning)
+- [cloudstic list](/commands/list) — List all snapshots before checking specific ones
+- [cloudstic restore](/commands/restore) — Restore data after verifying integrity

@@ -1,0 +1,183 @@
+---
+title: Storage Model & Object Layout
+description: Content-addressable storage architecture, object types, and crash safety guarantees
+---
+
+## Overview
+
+Cloudstic uses a **content-addressable storage model** where every piece of data is stored as an immutable object keyed by its hash. This architecture provides natural deduplication, structural sharing between snapshots, and strong crash safety guarantees.
+
+## Object Key Namespace
+
+All objects are stored under a flat key namespace with the pattern `<type>/<hash>`:
+
+| Prefix       | Description                                           |
+|--------------|-------------------------------------------------------|
+| `chunk/`     | Compressed file data segments (zstd, FastCDC boundaries) |
+| `content/`   | Manifest listing the chunk refs that make up a file   |
+| `filemeta/`  | File metadata (name, size, mod time, content hash)    |
+| `node/`      | HAMT tree nodes (directory structure)                 |
+| `snapshot/`  | Root object tying a tree to a point in time           |
+| `index/`     | Mutable pointers (`latest`, `packs` catalog)           |
+| `keys/`      | Encryption key slots (stored unencrypted)             |
+| `config`     | Repository marker (unencrypted)                       |
+
+<Note>
+Objects under `chunk/`, `content/`, `filemeta/`, `node/`, and `snapshot/` are immutable once written. Only objects under `index/` and `keys/` are mutable.
+</Note>
+
+## Object Immutability
+
+Because all data objects are content-addressed and append-only, interrupted backups **cannot corrupt existing data**. A partial write can never overwrite or modify an object that was already stored.
+
+This immutability provides:
+
+- **Natural deduplication** — identical content produces the same hash
+- **Structural sharing** — unchanged subtrees are reused by reference
+- **Crash safety** — previous snapshots remain valid even if a backup is interrupted
+- **Point-in-time recovery** — every snapshot is a complete, consistent checkpoint
+
+## Hash Function Selection
+
+Different object types use different hash functions based on their security requirements:
+
+### Chunk Keys: HMAC-SHA256
+
+Chunks are keyed by **HMAC-SHA256** (when encryption is enabled) or **SHA-256** (when unencrypted):
+
+```go
+// From internal/core/ and AGENTS.md
+// Object key: chunk/<hmac_sha256> or chunk/<sha256>
+```
+
+The HMAC keying prevents the storage provider from confirming file contents by hashing known plaintext. The dedup key is derived from the encryption key via HKDF.
+
+### Metadata Keys: SHA-256
+
+All metadata objects (`content/`, `filemeta/`, `node/`, `snapshot/`) are keyed by the **SHA-256** hash of their canonical JSON representation:
+
+```go
+// From internal/core/models.go
+func (f *FileMeta) Ref() (string, []byte, error) {
+    hash, data, err := ComputeJSONHash(f)
+    if err != nil {
+        return "", data, err
+    }
+    return "filemeta/" + hash, data, nil
+}
+```
+
+## Write Order During Backup
+
+Backups follow a **bottom-up write order**, from raw data to the root pointer:
+
+```
+1. chunk/*        – file content segments (parallel, during upload phase)
+2. content/*      – per-file chunk manifests
+3. filemeta/*     – file metadata referencing its content hash
+4. node/*         – HAMT tree nodes (buffered in memory, flushed at the end)
+5. snapshot/*     – snapshot object referencing the HAMT root
+6. index/latest   – mutable pointer updated to the new snapshot
+7. index/packs    – pack catalog updated (if packfiles are enabled)
+```
+
+<Info>
+The **commit point** is step 6: until `index/latest` is updated, the previous backup state is fully intact and reachable.
+</Info>
+
+## Crash Safety Guarantees
+
+### Interruption Scenarios
+
+| Interrupted during             | Effect                                | Risk        |
+|--------------------------------|---------------------------------------|-------------|
+| Chunk / Content / FileMeta     | Orphaned blobs in store               | None        |
+| HAMT Flush                     | Orphaned node + blob objects          | None        |
+| Snapshot write                 | Orphaned snapshot + all its objects    | None        |
+| `index/latest` update          | New snapshot exists but isn't "latest" | None        |
+| `index/packs` catalog          | Catalog stale; rebuilt on next load    | None        |
+
+In every case, the previous `index/latest` still points at a fully valid snapshot with a complete, consistent tree.
+
+### Backend Atomicity
+
+Individual object writes are atomic on all supported backends:
+
+- **B2 (Backblaze):** Incomplete uploads are not visible. An object is only readable after the upload completes successfully.
+- **S3 / S3-compatible:** Same as B2 — objects become visible only after the upload completes.
+- **SFTP:** `Put` writes to a `.tmp` file and renames via `PosixRename`, which is atomic on most SFTP server implementations.
+- **Local filesystem:** `Put` writes to a `.tmp` file and renames atomically (`os.Rename`), which is atomic on POSIX systems.
+
+## Deduplication
+
+Deduplication operates at two levels:
+
+### Chunk-Level Deduplication
+
+Before writing a chunk, `Exists("chunk/<hash>")` is checked. If the chunk is already stored, the write is skipped.
+
+When encryption is enabled, the chunk hash is an **HMAC-SHA256** keyed by a dedup key derived from the encryption key. This prevents the storage provider from confirming file contents by hashing known plaintext.
+
+When encryption is disabled, plain **SHA-256** is used.
+
+### Content-Level Deduplication
+
+Before streaming a file, `Exists("content/<hash>")` is checked using the source-provided content hash (e.g. Drive MD5 converted to SHA-256 via metadata comparison).
+
+If the content object exists, the entire file upload is skipped — only a new `filemeta` and possibly new HAMT nodes are written.
+
+<Note>
+A "new" file with identical content to a previously backed-up file produces zero additional chunk/content bytes.
+</Note>
+
+## Packfiles: Small Object Aggregation
+
+To avoid issuing hundreds of thousands of S3 `PUT` and `GET` requests for tiny metadata objects, the storage layer implements a **PackStore**:
+
+- All small objects (< 512KB) like `filemeta/`, `node/`, and small `content/` objects are buffered in memory and flushed as aggregated 8MB `packs/<hash>` files.
+- The `index/packs` catalog is then updated to record the exact byte offset and length of each logical object within its packfile.
+- When reading, the entire 8MB packfile is fetched and cached in an LRU, meaning thousands of subsequent metadata reads take 0 network requests.
+- Uses a bbolt-backed catalog for fast lookups.
+
+## Garbage Collection
+
+The `prune` command performs a **mark-and-sweep** garbage collection to reclaim space from orphaned objects:
+
+### Mark Phase
+
+Walk every `snapshot/*` key, then follow the chain:
+```
+snapshot → HAMT nodes → filemeta → content → chunks
+```
+
+Collect all reachable keys into a set.
+
+### Sweep Phase
+
+List all keys under each object prefix (`chunk/`, `content/`, `filemeta/`, `node/`, `snapshot/`) and delete any key not in the reachable set.
+
+Objects inside packfiles are removed from the pack catalog.
+
+### Repack Phase
+
+When packfiles are enabled, fragmented packs (more than 30% wasted space from deleted objects) are repacked:
+
+1. Live objects are extracted from old packs
+2. Re-bundled into new 8MB packs
+3. Old packs are deleted
+
+<Info>
+Running prune after an interrupted backup will delete all orphaned objects and restore the repository to a clean state. No data from completed snapshots is affected.
+</Info>
+
+## Edge Cases
+
+### Snapshot Written, Index Not Updated
+
+If the interruption occurs between writing the snapshot and updating `index/latest`, the snapshot object exists under `snapshot/` and is therefore **reachable** during prune's mark phase.
+
+It will survive garbage collection as a valid, complete snapshot, even though it's not currently referenced by `index/latest`.
+
+### Self-Healing Snapshot Catalog
+
+The `index/snapshots` catalog contains lightweight summaries of all snapshots. If it becomes stale (due to an interrupted backup or external snapshot deletion), it self-heals via reconciliation with `LIST snapshot/` on load.

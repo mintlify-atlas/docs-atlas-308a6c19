@@ -1,0 +1,103 @@
+---
+title: Storage Backends Overview
+description: Choose the right storage backend for your Cloudstic backups
+---
+
+Cloudstic supports multiple storage backends for maximum flexibility. All backends support encryption, compression, and content-addressed deduplication.
+
+## Available Backends
+
+<CardGroup cols={2}>
+  <Card title="Local Storage" icon="folder" href="/storage/local">
+    Store backups on the local filesystem
+  </Card>
+  <Card title="Amazon S3" icon="aws" href="/storage/s3">
+    S3-compatible storage (AWS, R2, MinIO)
+  </Card>
+  <Card title="Backblaze B2" icon="cloud" href="/storage/b2">
+    Cost-effective cloud storage
+  </Card>
+  <Card title="SFTP" icon="server" href="/storage/sftp">
+    Remote storage over SSH
+  </Card>
+</CardGroup>
+
+## Choosing a Backend
+
+### Local Storage
+
+Best for:
+- Local backups to external drives
+- Fast network-attached storage (NAS)
+- Testing and development
+
+### S3-Compatible
+
+Best for:
+- AWS S3 for scalable cloud storage
+- Cloudflare R2 for zero-egress costs
+- MinIO for self-hosted S3 compatibility
+
+### Backblaze B2
+
+Best for:
+- Cost-effective cloud storage
+- Long-term archival with low storage costs
+- Predictable pricing
+
+### SFTP
+
+Best for:
+- Existing SSH-accessible servers
+- Remote Linux/Unix systems
+- Simple remote backup without cloud setup
+
+## Common Features
+
+All storage backends support:
+
+- **Encryption**: AES-256-GCM with key derivation
+- **Compression**: Automatic zstd compression
+- **Deduplication**: Content-addressed storage
+- **Packfiles**: Bundle small objects to reduce API calls
+- **Atomic writes**: Temporary files with atomic rename
+
+## Configuration
+
+Storage backends are configured via:
+
+1. **Command-line flags** (e.g., `-store local -store-path /backup`)
+2. **Environment variables** (e.g., `CLOUDSTIC_STORE=local`)
+3. **Per-backend credentials** (e.g., `B2_KEY_ID`, `AWS_ACCESS_KEY_ID`)
+
+<Note>
+Environment variables are particularly useful for automation and CI/CD pipelines.
+</Note>
+
+## Backend Selection
+
+Specify the storage backend with the `-store` flag:
+
+```bash
+cloudstic init -store local -store-path ./backup_store
+cloudstic init -store s3 -store-path my-bucket
+cloudstic init -store b2 -store-path my-bucket
+cloudstic init -store sftp -store-path /remote/backup
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Local Storage" icon="folder" href="/storage/local">
+    Set up local filesystem storage
+  </Card>
+  <Card title="S3 Storage" icon="aws" href="/storage/s3">
+    Configure S3-compatible storage
+  </Card>
+  <Card title="B2 Storage" icon="cloud" href="/storage/b2">
+    Set up Backblaze B2
+  </Card>
+  <Card title="SFTP Storage" icon="server" href="/storage/sftp">
+    Configure SFTP storage
+  </Card>
+</CardGroup>

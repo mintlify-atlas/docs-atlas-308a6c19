@@ -1,0 +1,484 @@
+---
+title: "Restoring Files from Backups"
+description: "How to recover files and directories from Cloudstic snapshots as ZIP archives"
+---
+
+This guide explains how to restore files from your Cloudstic backups. You can restore entire snapshots or individual files and directories.
+
+## Understanding Restore Operations
+
+Cloudstic's `restore` command:
+
+- Creates a ZIP archive containing your files
+- Preserves directory structure and file metadata (names, sizes, modification times)
+- Decrypts and decompresses data automatically
+- Can restore entire snapshots or specific paths
+
+<Note>
+  Files are restored as a ZIP archive (`.zip` file), not directly to the filesystem. This prevents accidental overwrites and lets you inspect contents before extracting.
+</Note>
+
+## Finding Snapshots to Restore
+
+First, list available snapshots:
+
+```bash
+cloudstic list
+```
+
+Output:
+
+```
++-----+---------------------+------------------+--------+---------+------------+------+
+| Seq | Created             | Snapshot Hash    | Source | Account | Path       | Tags |
++-----+---------------------+------------------+--------+---------+------------+------+
+| 5   | 2026-03-03 22:00:00 | abc123def456...  | local  |         | /Documents |      |
+| 4   | 2026-03-02 22:00:00 | def456abc789...  | local  |         | /Documents |      |
+| 3   | 2026-03-01 22:00:00 | ghi789def012...  | gdrive | user    |            |      |
+...
++-----+---------------------+------------------+--------+---------+------------+------+
+```
+
+Browse files within a snapshot:
+
+```bash
+cloudstic ls abc123def456
+```
+
+## Restoring the Latest Snapshot
+
+Restore the most recent backup:
+
+```bash
+cloudstic restore
+```
+
+By default, this creates `./restore.zip` containing all files from the latest snapshot.
+
+Customize the output path:
+
+```bash
+cloudstic restore -output ~/my-backup.zip
+```
+
+## Restoring a Specific Snapshot
+
+Restore by snapshot hash:
+
+```bash
+cloudstic restore abc123def456
+```
+
+You can use:
+- Full hash: `abc123def456789...`
+- Short hash: `abc123def456` (any unique prefix)
+- The keyword `latest` for the most recent snapshot
+
+<CodeGroup>
+```bash Full Hash
+cloudstic restore abc123def456789abc123def456789abc123def456789abc123de
+```
+
+```bash Short Hash
+cloudstic restore abc123
+```
+
+```bash Latest
+cloudstic restore latest -output latest-backup.zip
+```
+</CodeGroup>
+
+## Restoring Specific Files or Directories
+
+Use `-path` to restore only part of a snapshot.
+
+### Restore a Single File
+
+```bash
+cloudstic restore abc123 -path Documents/report.pdf
+```
+
+This creates a ZIP containing only `Documents/report.pdf`.
+
+### Restore a Directory
+
+Add a trailing slash to restore an entire directory:
+
+```bash
+cloudstic restore abc123 -path Documents/
+```
+
+This restores `Documents/` and all its subdirectories.
+
+<Warning>
+  The trailing slash matters:
+  - `Documents/report.pdf` → single file
+  - `Documents/` → entire directory
+  - `Documents` → no match (use the trailing slash)
+</Warning>
+
+### Restore a Subdirectory
+
+```bash
+cloudstic restore abc123 -path Documents/Projects/Website/
+```
+
+Restores `Documents/Projects/Website/` and all files within it.
+
+## Previewing Without Writing
+
+Use `-dry-run` to see what would be restored without creating a ZIP file:
+
+```bash
+cloudstic restore abc123 -dry-run
+```
+
+Output:
+
+```
+Restoring snapshot abc123def456...
+
+Files to restore:
+  Documents/
+  Documents/report.pdf (2.3 MiB)
+  Documents/notes.txt (15 KiB)
+  Documents/Projects/
+  Documents/Projects/Website/
+  Documents/Projects/Website/index.html (4 KiB)
+  ...
+
+Dry run complete.
+  Files:  847
+  Dirs:   123
+  Total:  2.34 GiB
+```
+
+Combine with `-path` to preview specific files:
+
+```bash
+cloudstic restore abc123 -path Documents/ -dry-run
+```
+
+## Extracting Restored Files
+
+Once you have the ZIP archive, extract it:
+
+### Linux / macOS
+
+```bash
+# Extract to current directory
+unzip restore.zip
+
+# Extract to a specific directory
+unzip restore.zip -d ~/recovered-files/
+
+# List contents without extracting
+unzip -l restore.zip
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Extract to current directory
+Expand-Archive -Path restore.zip -DestinationPath .
+
+# Extract to a specific directory
+Expand-Archive -Path restore.zip -DestinationPath C:\RecoveredFiles\
+```
+
+### Windows (Command Prompt)
+
+```cmd
+tar -xf restore.zip
+```
+
+<Tip>
+  Modern Windows (10+) includes `tar` which can extract ZIP files.
+</Tip>
+
+## Common Restore Scenarios
+
+### Scenario 1: Accidental File Deletion
+
+You deleted a file and need to recover it:
+
+<Steps>
+  <Step title="Find the most recent snapshot">
+    ```bash
+    cloudstic list
+    ```
+  </Step>
+
+  <Step title="Verify the file exists in the snapshot">
+    ```bash
+    cloudstic ls abc123 | grep "report.pdf"
+    ```
+  </Step>
+
+  <Step title="Restore only that file">
+    ```bash
+    cloudstic restore abc123 -path Documents/report.pdf -output report-recovery.zip
+    ```
+  </Step>
+
+  <Step title="Extract and copy to original location">
+    ```bash
+    unzip report-recovery.zip
+    cp Documents/report.pdf ~/Documents/
+    ```
+  </Step>
+</Steps>
+
+### Scenario 2: Restore Entire System
+
+Recover all files after data loss:
+
+```bash
+# Restore the latest full snapshot
+cloudstic restore -output full-recovery.zip
+
+# Extract to a staging area
+mkdir ~/recovery
+unzip full-recovery.zip -d ~/recovery/
+
+# Review and move files back
+ls ~/recovery/
+```
+
+### Scenario 3: Compare File Versions
+
+Restore the same file from multiple snapshots to compare versions:
+
+```bash
+# Restore from today
+cloudstic restore abc123 -path Documents/report.pdf -output report-today.zip
+
+# Restore from last week
+cloudstic restore def456 -path Documents/report.pdf -output report-lastweek.zip
+
+# Extract and compare
+unzip report-today.zip -d today/
+unzip report-lastweek.zip -d lastweek/
+diff today/Documents/report.pdf lastweek/Documents/report.pdf
+```
+
+### Scenario 4: Partial Disaster Recovery
+
+Recover only critical directories:
+
+```bash
+# Restore important directories separately
+cloudstic restore latest -path Documents/ -output documents.zip
+cloudstic restore latest -path Projects/ -output projects.zip
+cloudstic restore latest -path Photos/ -output photos.zip
+
+# Extract each to appropriate locations
+unzip documents.zip -d /mnt/recovery/
+unzip projects.zip -d /mnt/recovery/
+unzip photos.zip -d /mnt/recovery/
+```
+
+## Verbose Output
+
+See detailed progress during restore:
+
+```bash
+cloudstic restore abc123 -verbose
+```
+
+Output:
+
+```
+Restoring snapshot abc123def456...
+Dir: Documents/
+File: Documents/report.pdf (2.3 MiB)
+File: Documents/notes.txt (15 KiB)
+Dir: Documents/Projects/
+File: Documents/Projects/todo.md (2 KiB)
+...
+
+Restore complete.
+  Files:  847
+  Dirs:   123
+  Bytes:  2.34 GiB
+```
+
+## Restoring to Different Machines
+
+Cloudstic backups are portable. To restore on a different machine:
+
+<Steps>
+  <Step title="Install Cloudstic on the target machine">
+    Follow the [installation guide](/installation).
+  </Step>
+
+  <Step title="Configure access to your repository">
+    ```bash
+    export CLOUDSTIC_STORE=s3
+    export CLOUDSTIC_STORE_PATH=my-backup-bucket
+    export CLOUDSTIC_ENCRYPTION_PASSWORD="your passphrase"
+    export AWS_ACCESS_KEY_ID=your-key
+    export AWS_SECRET_ACCESS_KEY=your-secret
+    ```
+  </Step>
+
+  <Step title="List snapshots to verify access">
+    ```bash
+    cloudstic list
+    ```
+  </Step>
+
+  <Step title="Restore as usual">
+    ```bash
+    cloudstic restore -output recovered-files.zip
+    unzip recovered-files.zip
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  You need the same encryption credentials (password or recovery key) used during `init` to restore backups.
+</Note>
+
+## Using Recovery Keys
+
+If you've lost your password but have your recovery key phrase:
+
+```bash
+export CLOUDSTIC_RECOVERY_KEY="word1 word2 word3 ... word24"
+cloudstic restore -output emergency-restore.zip
+```
+
+Or provide it directly:
+
+```bash
+cloudstic restore -recovery-key "word1 word2 ... word24" -output emergency.zip
+```
+
+<Warning>
+  Store your 24-word recovery key in a safe place. It's your last line of defense if you lose your password.
+</Warning>
+
+## Performance Tips
+
+### Large Restores
+
+For very large snapshots:
+
+1. **Restore specific paths** instead of the entire snapshot:
+   ```bash
+   cloudstic restore abc123 -path Documents/ -output documents.zip
+   cloudstic restore abc123 -path Photos/ -output photos.zip
+   ```
+
+2. **Use dry-run first** to estimate size:
+   ```bash
+   cloudstic restore abc123 -dry-run
+   ```
+
+3. **Ensure sufficient disk space** for the ZIP file (roughly the same size as the original data).
+
+### Remote Storage
+
+When restoring from S3/B2:
+- Restore runs faster in the same region as your bucket
+- Network speed affects restore time
+- Use AWS EC2 or similar for very large restores
+
+## Troubleshooting
+
+### "Snapshot not found" Error
+
+Verify the snapshot exists:
+
+```bash
+cloudstic list | grep abc123
+```
+
+Use the correct hash from the "Snapshot Hash" column.
+
+### "Permission denied" Writing ZIP
+
+Ensure you have write access to the output directory:
+
+```bash
+cloudstic restore -output ~/restore.zip
+```
+
+### "Failed to decrypt" Error
+
+Your encryption password or key is incorrect. Double-check:
+
+```bash
+echo $CLOUDSTIC_ENCRYPTION_PASSWORD
+```
+
+Or use your recovery key:
+
+```bash
+cloudstic restore -recovery-key "word1 word2 ... word24"
+```
+
+### Restore is Slow
+
+Large snapshots take time. Use `-verbose` to monitor progress:
+
+```bash
+cloudstic restore abc123 -verbose
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Test restores regularly">
+    Verify you can recover files before you need to:
+    ```bash
+    cloudstic restore latest -path Documents/test.txt -output test-restore.zip
+    unzip test-restore.zip
+    ```
+  </Step>
+
+  <Step title="Document your restore procedure">
+    Keep notes on how to restore backups, including:
+    - Repository location and credentials
+    - Common restore commands
+    - Recovery key location
+  </Step>
+
+  <Step title="Use dry-run for large restores">
+    Preview before committing:
+    ```bash
+    cloudstic restore abc123 -dry-run
+    ```
+  </Step>
+
+  <Step title="Extract to a staging directory">
+    Never extract directly to production:
+    ```bash
+    unzip restore.zip -d ~/staging/
+    # Review contents
+    cp -r ~/staging/Documents/* ~/Documents/
+    ```
+  </Step>
+
+  <Step title="Keep recovery credentials accessible">
+    Store your encryption password and recovery key in a password manager or safe location.
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Encryption Keys" icon="key" href="/guides/encryption-keys">
+    Manage passwords and recovery keys
+  </Card>
+  <Card title="Retention Policies" icon="clock" href="/guides/retention-policies">
+    Decide which snapshots to keep
+  </Card>
+  <Card title="Diff Command" icon="code-compare" href="/commands/diff">
+    Compare snapshots before restoring
+  </Card>
+  <Card title="Check Command" icon="check" href="/commands/check">
+    Verify backup integrity before restore
+  </Card>
+</CardGroup>

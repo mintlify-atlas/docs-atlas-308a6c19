@@ -1,0 +1,178 @@
+---
+title: "cloudstic key list"
+description: "List all encryption key slots in the repository"
+---
+
+## Overview
+
+The `cloudstic key list` command displays all encryption key slots present in your repository. Key slots are cryptographic containers that store the master encryption key wrapped with different credentials (passwords, platform keys, recovery keys, or KMS keys).
+
+## Usage
+
+```bash
+cloudstic key list [options]
+```
+
+## Description
+
+Each encrypted Cloudstic repository has a single master encryption key that is wrapped and stored in multiple "key slots." Each slot allows you to unlock the repository using a different credential type:
+
+- **password** — Password-based key derivation using Argon2id
+- **platform** — Direct encryption using a 32-byte platform key
+- **recovery** — BIP39 24-word mnemonic seed phrase
+- **kms-platform** — AWS KMS-wrapped platform key (envelope encryption)
+
+This command lists all available slots, showing their type, label, and key derivation function (KDF) parameters.
+
+## Key Slot Types
+
+<ParamField path="password" type="Key Slot Type">
+  Password-based key slot using Argon2id for key derivation. The master key is wrapped using a key derived from your password with a random salt. The KDF parameters (time, memory, threads) are stored in the slot.
+</ParamField>
+
+<ParamField path="platform" type="Key Slot Type">
+  Platform key slot using a raw 32-byte (64 hex character) encryption key. The master key is wrapped directly with the platform key using AES-256-GCM. No key derivation function is used.
+</ParamField>
+
+<ParamField path="recovery" type="Key Slot Type">
+  Recovery key slot using a BIP39 24-word mnemonic. The mnemonic encodes a 32-byte key that wraps the master key. This provides a human-readable backup method for repository access.
+</ParamField>
+
+<ParamField path="kms-platform" type="Key Slot Type">
+  KMS-wrapped platform key slot using AWS KMS envelope encryption. The master key is wrapped with a platform key, which is itself encrypted by AWS KMS. This allows centralized key management and access control via IAM policies.
+</ParamField>
+
+## Output Format
+
+The command displays a table with the following columns:
+
+- **Type** — The slot type (password, platform, recovery, or kms-platform)
+- **Label** — A user-friendly identifier (usually "default" for single-slot types)
+- **KDF** — The key derivation function used ("argon2id" for password slots, "—" for others)
+
+## Examples
+
+### List all key slots in a password-encrypted repository
+
+```bash
+cloudstic key list
+```
+
+Example output:
+```
+┌──────────┬─────────┬──────────┐
+│ Type     │ Label   │ KDF      │
+├──────────┼─────────┼──────────┤
+│ password │ default │ argon2id │
+└──────────┴─────────┴──────────┘
+
+1 key slot(s) found.
+```
+
+### List slots in a repository with multiple credentials
+
+```bash
+cloudstic key list -store s3 -store-path my-bucket
+```
+
+Example output:
+```
+┌──────────┬─────────┬──────────┐
+│ Type     │ Label   │ KDF      │
+├──────────┼─────────┼──────────┤
+│ password │ default │ argon2id │
+│ recovery │ default │ —        │
+│ platform │ default │ —        │
+└──────────┴─────────┴──────────┘
+
+3 key slot(s) found.
+```
+
+### List slots for a KMS-encrypted repository
+
+```bash
+cloudstic key list -store b2 -store-path backup-bucket
+```
+
+Example output:
+```
+┌──────────────┬─────────┬─────┐
+│ Type         │ Label   │ KDF │
+├──────────────┼─────────┼─────┤
+│ kms-platform │ default │ —   │
+│ password     │ default │ argon2id │
+└──────────────┴─────────┴─────┘
+
+2 key slot(s) found.
+```
+
+## Use Cases
+
+- **Audit repository access methods** — Verify which credential types are configured
+- **Confirm recovery key creation** — Check that a recovery slot was successfully added
+- **Troubleshoot unlock issues** — Identify available slot types when credentials don't work
+- **Security review** — Ensure expected key slot types are present (e.g., KMS for compliance)
+
+## Notes
+
+<Warning>
+  This command only works with encrypted repositories. Unencrypted repositories (created with `--no-encryption`) will display: "Repository is not encrypted -- no key slots to list."
+</Warning>
+
+- Key slots are stored under the `keys/` prefix in the object store
+- All key slots wrap the same master encryption key using different credentials
+- You only need **one** working credential to unlock the repository
+- The master key is never stored in plaintext — it's always wrapped by a credential
+- Key slots are stored **unencrypted** (they contain only wrapped keys, not the actual master key)
+
+## Global Options
+
+
+- `-store`, `-store-path` — Specify the repository location
+- `-encryption-*` flags — Not required for listing (slots are stored unencrypted)
+- `-debug` — Log detailed store requests
+
+## Related Commands
+
+- [`cloudstic key add-recovery`](/commands/key-add-recovery) — Generate a recovery key
+- [`cloudstic key passwd`](/commands/key-passwd) — Change the repository password
+- [`cloudstic init`](/commands/init) — Initialize a repository with encryption
+- [`cloudstic cat`](/commands/cat) — View raw key slot JSON objects
+
+## Technical Details
+
+### Key Slot Storage
+
+Key slots are stored as JSON objects with keys in the format `keys/<type>-<label>`. For example:
+
+```
+keys/password-default
+keys/recovery-default
+keys/platform-default
+```
+
+### Slot JSON Structure
+
+```json
+{
+  "slot_type": "password",
+  "wrapped_key": "<base64-encoded wrapped master key>",
+  "label": "default",
+  "kdf_params": {
+    "algorithm": "argon2id",
+    "salt": "<base64-encoded salt>",
+    "time": 3,
+    "memory": 65536,
+    "threads": 4
+  }
+}
+```
+
+### Security Model
+
+- **Master Key** — 32-byte random key generated during `cloudstic init`
+- **Wrapping Key** — Derived from your credential (password → Argon2id, platform key → direct, recovery → BIP39)
+- **Wrapped Key** — Master key encrypted with wrapping key using AES-256-GCM
+- **Encryption Key** — Derived from master key using HKDF for data encryption
+
+This separation allows credential changes (via `key passwd`) without re-encrypting all backup data.

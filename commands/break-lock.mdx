@@ -1,0 +1,455 @@
+---
+title: 'cloudstic break-lock'
+description: 'Remove stale repository locks left by crashed or killed processes'
+---
+
+## Overview
+
+The `cloudstic break-lock` command forcibly removes lock files from a Cloudstic repository. Locks are automatically acquired by operations like `backup`, `prune`, and `forget` to prevent concurrent writes that could corrupt the repository.
+
+<Warning>
+  **Only use `break-lock` if you are certain no other Cloudstic process is currently running.** Breaking a lock held by an active process can cause repository corruption or data loss.
+</Warning>
+
+## When to Use
+
+Use `break-lock` when:
+
+- A Cloudstic process was killed (SIGKILL, crash, system reboot) and left a stale lock
+- You receive an error like: `repository is locked by another operation`
+- You have verified that no other Cloudstic process is running (check with `ps`, `htop`, or your process manager)
+
+<Tip>
+  Locks automatically expire after a timeout period (typically 1 hour). If possible, wait for the lock to expire naturally instead of breaking it.
+</Tip>
+
+## Basic Usage
+
+```bash
+cloudstic break-lock [options]
+```
+
+## Terminal Output Examples
+
+### Stale Lock Removed
+
+```bash
+$ cloudstic break-lock
+Locks removed:
+  Operation:  backup
+  Holder:     hostname-12345-20260301T103045Z
+  Acquired:   2026-03-01T10:30:45Z
+  Expired at: 2026-03-01T11:30:45Z
+  Shared:     false
+```
+
+This indicates a backup operation's lock was successfully removed. The lock was acquired on March 1 at 10:30 and would have expired at 11:30.
+
+### No Lock Found
+
+```bash
+$ cloudstic break-lock
+No lock found — repository is not locked.
+```
+
+The repository is not currently locked. No action was taken.
+
+### Multiple Locks Removed
+
+```bash
+$ cloudstic break-lock
+Locks removed:
+  Operation:  backup
+  Holder:     server1-67890-20260301T093000Z
+  Acquired:   2026-03-01T09:30:00Z
+  Expired at: 2026-03-01T10:30:00Z
+  Shared:     false
+
+  Operation:  prune
+  Holder:     server2-11223-20260301T095000Z
+  Acquired:   2026-03-01T09:50:00Z
+  Expired at: 2026-03-01T10:50:00Z
+  Shared:     false
+```
+
+Multiple stale locks from different processes were removed.
+
+## Command Flags
+
+`break-lock` has no command-specific flags. It uses global flags for repository access.
+
+### Global Flags
+
+<ParamField path="-store" type="string" default="local" env="CLOUDSTIC_STORE">
+  Storage backend type: `local`, `b2`, `s3`, `sftp`.
+</ParamField>
+
+<ParamField path="-store-path" type="string" default="./backup_store" env="CLOUDSTIC_STORE_PATH">
+  Local/SFTP directory path or B2/S3 bucket name.
+</ParamField>
+
+<ParamField path="-store-prefix" type="string" default="" env="CLOUDSTIC_STORE_PREFIX">
+  Key prefix for B2/S3 objects.
+</ParamField>
+
+<ParamField path="-encryption-key" type="string" default="" env="CLOUDSTIC_ENCRYPTION_KEY">
+  Platform key (64 hex chars = 32 bytes) for encrypted repositories.
+</ParamField>
+
+<ParamField path="-encryption-password" type="string" default="" env="CLOUDSTIC_ENCRYPTION_PASSWORD">
+  Repository password for encrypted repositories.
+</ParamField>
+
+<ParamField path="-recovery-key" type="string" default="" env="CLOUDSTIC_RECOVERY_KEY">
+  24-word BIP39 recovery phrase.
+</ParamField>
+
+<ParamField path="-kms-key-arn" type="string" default="" env="CLOUDSTIC_KMS_KEY_ARN">
+  AWS KMS key ARN for KMS-encrypted repositories.
+</ParamField>
+
+<ParamField path="-verbose" type="boolean" default="false">
+  Log detailed operations.
+</ParamField>
+
+<ParamField path="-quiet" type="boolean" default="false">
+  Suppress output (not recommended for this command).
+</ParamField>
+
+<ParamField path="-debug" type="boolean" default="false">
+  Log every store request (network calls, timing, sizes).
+</ParamField>
+
+### S3-Specific Flags
+
+<ParamField path="-s3-endpoint" type="string" default="" env="CLOUDSTIC_S3_ENDPOINT">
+  S3-compatible endpoint (MinIO, R2, etc.).
+</ParamField>
+
+<ParamField path="-s3-region" type="string" default="us-east-1" env="CLOUDSTIC_S3_REGION">
+  S3 region.
+</ParamField>
+
+<ParamField path="-s3-access-key" type="string" default="" env="AWS_ACCESS_KEY_ID">
+  S3 access key ID.
+</ParamField>
+
+<ParamField path="-s3-secret-key" type="string" default="" env="AWS_SECRET_ACCESS_KEY">
+  S3 secret access key.
+</ParamField>
+
+### SFTP-Specific Flags
+
+<ParamField path="-sftp-host" type="string" default="" env="CLOUDSTIC_SFTP_HOST">
+  SFTP server hostname.
+</ParamField>
+
+<ParamField path="-sftp-port" type="string" default="22" env="CLOUDSTIC_SFTP_PORT">
+  SFTP server port.
+</ParamField>
+
+<ParamField path="-sftp-user" type="string" default="" env="CLOUDSTIC_SFTP_USER">
+  SFTP username.
+</ParamField>
+
+<ParamField path="-sftp-password" type="string" default="" env="CLOUDSTIC_SFTP_PASSWORD">
+  SFTP password.
+</ParamField>
+
+<ParamField path="-sftp-key" type="string" default="" env="CLOUDSTIC_SFTP_KEY">
+  Path to SSH private key file.
+</ParamField>
+
+## Examples
+
+### Local Repository
+
+```bash
+cloudstic break-lock
+```
+
+### Remote S3 Repository
+
+```bash
+export AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+export AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+cloudstic break-lock \
+  -store s3 \
+  -store-path my-backup-bucket \
+  -s3-region us-west-2 \
+  -encryption-password "my-passphrase"
+```
+
+### SFTP Repository
+
+```bash
+cloudstic break-lock \
+  -store sftp \
+  -sftp-host backup.example.com \
+  -sftp-user backupuser \
+  -sftp-key ~/.ssh/id_rsa \
+  -store-path /home/backupuser/cloudstic
+```
+
+### With Debug Logging
+
+```bash
+cloudstic break-lock -debug
+```
+
+**Output:**
+```
+[DEBUG] GET lock/backup-server1-12345.lock (234 bytes, 45ms)
+[DEBUG] DELETE lock/backup-server1-12345.lock (0 bytes, 32ms)
+Locks removed:
+  Operation:  backup
+  Holder:     server1-12345-20260301T103045Z
+  Acquired:   2026-03-01T10:30:45Z
+  Expired at: 2026-03-01T11:30:45Z
+  Shared:     false
+```
+
+## How Locks Work
+
+### Lock Acquisition
+
+When a Cloudstic operation starts, it attempts to acquire a lock:
+
+1. **Generate lock ID:** `<operation>-<hostname>-<pid>-<timestamp>`
+2. **Write lock file:** Store lock metadata (holder, operation, acquired time, expiration)
+3. **Validate lock:** Check that no other exclusive lock exists
+4. **Proceed with operation**
+
+<Note>
+  Some operations use **shared locks** (e.g., `check`, `restore`) that allow concurrent reads. Others use **exclusive locks** (e.g., `backup`, `prune`) to prevent concurrent writes.
+</Note>
+
+### Lock Expiration
+
+Locks have a default expiration time (typically 1 hour). If a lock is older than its expiration time:
+
+- **Automatic expiration:** New operations can proceed and ignore expired locks
+- **Manual cleanup:** `break-lock` removes expired or stale locks
+
+### Lock Storage
+
+Locks are stored as objects in the repository:
+
+- **Key format:** `lock/<operation>-<holder>.lock`
+- **Content:** JSON metadata (operation, holder, timestamps, shared flag)
+- **Unencrypted:** Lock files are stored in plaintext for debuggability
+
+## Understanding Lock Information
+
+### Operation
+
+The Cloudstic command that held the lock:
+
+- `backup` — Backup operation
+- `prune` — Prune operation
+- `forget` — Forget operation
+- `init` — Repository initialization (rare, short-lived)
+
+### Holder
+
+Unique identifier for the process that acquired the lock:
+
+```
+hostname-12345-20260301T103045Z
+```
+
+- **hostname:** Machine hostname
+- **12345:** Process ID (PID)
+- **timestamp:** When the lock was acquired (ISO 8601 UTC)
+
+### Acquired / Expired At
+
+- **Acquired:** When the lock was first created
+- **Expired at:** When the lock would automatically become invalid
+
+<Tip>
+  If the current time is past "Expired at", the lock is already stale and safe to break.
+</Tip>
+
+### Shared
+
+- **true:** Shared lock (allows concurrent read operations)
+- **false:** Exclusive lock (prevents all other operations)
+
+## Safety Considerations
+
+<Warning>
+  **Breaking an active lock can corrupt your repository.** Always verify no Cloudstic process is running before using `break-lock`.
+</Warning>
+
+### How to Verify No Active Processes
+
+#### Linux/macOS
+
+```bash
+# Check for cloudstic processes
+ps aux | grep cloudstic
+
+# Or use pgrep
+pgrep -fl cloudstic
+
+# Check system-wide
+htop  # Search for "cloudstic"
+```
+
+#### Windows
+
+```powershell
+# PowerShell
+Get-Process | Where-Object { $_.ProcessName -like "*cloudstic*" }
+
+# Task Manager
+# Look for "cloudstic.exe" in Processes tab
+```
+
+#### Systemd/Cron
+
+Check if Cloudstic is running as a scheduled task:
+
+```bash
+# Systemd timers
+systemctl list-timers --all | grep cloudstic
+
+# Cron jobs
+crontab -l | grep cloudstic
+sudo crontab -l | grep cloudstic  # System-wide cron
+```
+
+### When It's Safe to Break a Lock
+
+✅ **Safe scenarios:**
+- Process was killed (SIGKILL, crash, reboot)
+- Lock expiration time has passed
+- You confirmed no active Cloudstic processes
+- Lock holder hostname is a decommissioned machine
+
+❌ **Unsafe scenarios:**
+- Active backup is in progress on another machine
+- Scheduled backup might be running (check cron/systemd)
+- Uncertain about process status
+
+## Troubleshooting
+
+### Error: Failed to init store
+
+```
+Failed to init store: no such host
+```
+
+**Cause:** Cannot connect to storage backend.
+
+**Resolution:** Verify `-store`, `-store-path`, and credentials (e.g., `-s3-access-key`, `-sftp-host`).
+
+### Error: Failed to break lock
+
+```
+Failed to break lock: permission denied
+```
+
+**Cause:** Insufficient permissions to delete lock objects.
+
+**Resolution:** 
+- Check storage backend permissions (S3 IAM policy, SFTP file permissions)
+- Verify you have write access to the repository
+
+### Lock reappears immediately after breaking
+
+**Cause:** Another process is actively creating locks (e.g., running backup).
+
+**Resolution:** 
+1. Find and stop the active process
+2. Wait for the lock to expire naturally (check "Expired at" time)
+3. Do not repeatedly break locks — this indicates an underlying issue
+
+### Repository is corrupted after breaking lock
+
+**Cause:** Lock was broken while another process was writing.
+
+**Resolution:** 
+1. Run `cloudstic check` to assess damage
+2. If errors found, restore from an earlier snapshot or backup
+3. In the future, always verify no processes are running before breaking locks
+
+## Use Cases
+
+### Crashed Backup Job
+
+```bash
+# Backup process was killed by system OOM killer
+$ cloudstic backup -source local -source-path /data
+Killed
+
+# Later, trying to run backup again:
+$ cloudstic backup -source local -source-path /data
+Error: repository is locked by another operation
+
+# Verify no processes running:
+$ ps aux | grep cloudstic
+# (no results)
+
+# Break the stale lock:
+$ cloudstic break-lock
+Locks removed:
+  Operation:  backup
+  Holder:     server1-12345-20260301T103045Z
+  ...
+
+# Retry backup:
+$ cloudstic backup -source local -source-path /data
+# Success!
+```
+
+### Remote Repository Lock After Server Reboot
+
+```bash
+# Server rebooted unexpectedly while backup was running
+# Next backup attempt:
+$ cloudstic backup -store s3 -store-path my-bucket -source local -source-path /data
+Error: repository is locked by another operation
+
+# Check lock details:
+$ cloudstic break-lock -store s3 -store-path my-bucket
+Locks removed:
+  Operation:  backup
+  Holder:     old-server-78901-20260228T153000Z
+  Acquired:   2026-02-28T15:30:00Z
+  Expired at: 2026-02-28T16:30:00Z  # Already expired!
+  Shared:     false
+
+# Lock was already expired — safe to remove
+```
+
+### CI/CD Pipeline Failure
+
+```bash
+# CI job was canceled mid-backup
+# Next CI run:
+- cloudstic backup -source local -source-path /workspace
+  Error: repository is locked by another operation
+
+# CI script includes lock recovery:
+- cloudstic break-lock || true  # Ignore errors if no lock
+- cloudstic backup -source local -source-path /workspace
+```
+
+<Tip>
+  For automated environments (CI/CD, cron), consider adding `break-lock` to your recovery logic. However, ensure jobs don't run concurrently (e.g., use job queues or single-instance constraints).
+</Tip>
+
+## Exit Codes
+
+- **0** — Success (lock removed or no lock found)
+- **1** — Error (store initialization failed, permission denied, or command error)
+
+## Related Commands
+
+- [cloudstic backup](/commands/backup) — May create locks that need breaking
+- [cloudstic prune](/commands/prune) — Creates exclusive locks
+- [cloudstic forget](/commands/forget) — Creates exclusive locks
+- [cloudstic check](/commands/check) — Creates shared locks (rarely needs breaking)

@@ -1,0 +1,252 @@
+---
+title: "cloudstic cat"
+description: "Display raw JSON content of repository objects for inspection and debugging"
+---
+
+The `cat` command displays the raw JSON content of repository objects. This is useful for inspecting the internal structure of your backup repository, debugging issues, or understanding how data is stored.
+
+## Usage
+
+```bash
+cloudstic cat [options] <object_key> [object_key...]
+```
+
+## Object Key Patterns
+
+You can inspect any repository object by its key pattern:
+
+- **`config`** — Repository configuration (encryption status, version, creation date)
+- **`index/latest`** — Mutable pointer to the most recent snapshot
+- **`index/snapshots`** — Snapshot catalog with lightweight summaries
+- **`snapshot/<hash>`** — Point-in-time backup snapshot metadata
+- **`filemeta/<hash>`** — File metadata (name, type, parents, content hash)
+- **`content/<hash>`** — Chunk manifests (list of chunk refs, or inline data for small files)
+- **`node/<hash>`** — HAMT internal/leaf nodes
+- **`chunk/<hash>`** — Raw file data chunks
+- **`keys/<slot>`** — Encryption key slots (stored unencrypted)
+
+<Tip>
+Use `cloudstic list` to get snapshot hashes, then inspect them with `cloudstic cat snapshot/<hash>`
+</Tip>
+
+## Options
+
+<ParamField path="-json" type="boolean" default="false">
+  Suppress non-JSON output (alias for `-quiet`). Only prints the JSON content without headers or spacing.
+</ParamField>
+
+### Global Options
+
+
+
+## Examples
+
+### Display repository configuration
+
+```bash
+cloudstic cat config
+```
+
+**Output:**
+```json
+{
+  "version": 1,
+  "created": "2024-03-15T10:30:00Z",
+  "encrypted": true
+}
+```
+
+### Inspect the latest snapshot pointer
+
+```bash
+cloudstic cat index/latest
+```
+
+**Output:**
+```json
+{
+  "ref": "snapshot/a1b2c3d4e5f6789...",
+  "updated": "2024-03-20T14:22:10Z"
+}
+```
+
+### View a specific snapshot
+
+First, list snapshots to get the hash:
+
+```bash
+cloudstic list
+```
+
+Then inspect the snapshot:
+
+```bash
+cloudstic cat snapshot/a1b2c3d4e5f6789...
+```
+
+**Output:**
+```json
+{
+  "seq": 42,
+  "created": "2024-03-20T14:22:10Z",
+  "root": "node/f1e2d3c4b5a6...",
+  "source": {
+    "type": "local",
+    "path": "/home/user/documents"
+  },
+  "tags": ["daily", "documents"],
+  "stats": {
+    "files": 1234,
+    "bytes": 5368709120
+  }
+}
+```
+
+### Inspect multiple objects at once
+
+```bash
+cloudstic cat config index/latest index/snapshots
+```
+
+When multiple objects are requested, headers are printed to separate the output:
+
+```
+==> config <==
+{
+  "version": 1,
+  "created": "2024-03-15T10:30:00Z",
+  "encrypted": true
+}
+
+==> index/latest <==
+{
+  "ref": "snapshot/a1b2c3d4e5f6789...",
+  "updated": "2024-03-20T14:22:10Z"
+}
+
+==> index/snapshots <==
+{
+  "snapshots": [
+    {
+      "ref": "snapshot/a1b2c3d4e5f6789...",
+      "seq": 42,
+      "created": "2024-03-20T14:22:10Z"
+    }
+  ]
+}
+```
+
+### Output clean JSON for scripting
+
+Use `-json` to suppress headers and spacing:
+
+```bash
+cloudstic cat -json config | jq '.encrypted'
+```
+
+**Output:**
+```
+true
+```
+
+### View file metadata
+
+```bash
+cloudstic cat filemeta/d4e5f6a1b2c3...
+```
+
+**Output:**
+```json
+{
+  "name": "report.pdf",
+  "type": "file",
+  "size": 2097152,
+  "mode": 420,
+  "mtime": "2024-03-19T08:15:30Z",
+  "content": "content/e6f7a8b9c0d1...",
+  "parents": [
+    "filemeta/b2c3d4e5f6a7..."
+  ]
+}
+```
+
+### Inspect encryption key slots
+
+```bash
+cloudstic cat keys/password-1
+```
+
+**Output:**
+```json
+{
+  "slot_type": "password",
+  "label": "Default password slot",
+  "wrapped_key": "...",
+  "kdf_params": {
+    "algorithm": "scrypt",
+    "n": 32768,
+    "r": 8,
+    "p": 1,
+    "salt": "..."
+  }
+}
+```
+
+## Use Cases
+
+### Debugging
+
+When troubleshooting repository issues, inspect the object hierarchy:
+
+```bash
+# Check repository initialization
+cloudstic cat config
+
+# Verify latest snapshot exists
+cloudstic cat index/latest
+
+# Inspect snapshot metadata
+cloudstic cat snapshot/<hash>
+```
+
+### Understanding Repository Structure
+
+Explore how Cloudstic stores data internally:
+
+```bash
+# View snapshot catalog
+cloudstic cat index/snapshots
+
+# Follow the reference chain
+cloudstic cat snapshot/<hash> | jq '.root'
+cloudstic cat node/<root-hash>
+```
+
+### Scripting and Automation
+
+Extract specific fields using `jq` or other JSON tools:
+
+```bash
+# Get the latest snapshot hash
+cloudstic cat -json index/latest | jq -r '.ref'
+
+# Count total files in a snapshot
+cloudstic cat -json snapshot/<hash> | jq '.stats.files'
+
+# Check encryption status
+cloudstic cat -json config | jq -r '.encrypted'
+```
+
+## Notes
+
+- **Read-only operation**: This command only reads from the repository and never modifies data
+- **Encrypted content**: Content objects (`content/*`, `chunk/*`, `filemeta/*`, `node/*`, `snapshot/*`) are encrypted in encrypted repositories. The `cat` command automatically decrypts them.
+- **Unencrypted objects**: `config`, `keys/*`, and `index/*` objects are always stored unencrypted
+- **JSON formatting**: Output is automatically pretty-printed with 2-space indentation unless `-json` is specified
+- **Hash prefixes**: Object keys use full SHA-256 hashes. You can use the full hash from other commands like `list`
+
+## Related Commands
+
+- [`cloudstic list`](/commands/list) — List all snapshots to get snapshot hashes
+- [`cloudstic ls`](/commands/ls) — List files within a snapshot
+- [`cloudstic check`](/commands/check) — Verify repository integrity

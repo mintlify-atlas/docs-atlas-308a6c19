@@ -1,0 +1,225 @@
+---
+title: Local Filesystem Storage
+description: Store backups on the local filesystem or network-attached storage
+---
+
+The local storage backend stores backups on the local filesystem. It's ideal for external drives, NAS devices, or development/testing.
+
+## Configuration
+
+### Basic Setup
+
+Initialize a repository with local storage:
+
+```bash
+cloudstic init -store local -store-path /path/to/backup
+```
+
+The directory will be created automatically if it doesn't exist.
+
+### Environment Variables
+
+<ParamField path="CLOUDSTIC_STORE" type="string" default="local">
+  Storage backend type
+</ParamField>
+
+<ParamField path="CLOUDSTIC_STORE_PATH" type="string" default="./backup_store">
+  Path to the backup directory
+</ParamField>
+
+## Examples
+
+<Tabs>
+  <Tab title="External Drive">
+    ```bash
+    # Initialize on an external drive
+    cloudstic init -store local -store-path /mnt/backup-drive/cloudstic
+
+    # Backup to the external drive
+    cloudstic backup -source local -source-path ~/Documents
+    ```
+  </Tab>
+
+  <Tab title="Network Share">
+    ```bash
+    # Mount a network share (example)
+    sudo mount -t cifs //nas.local/backup /mnt/nas
+
+    # Initialize on the network share
+    cloudstic init -store local -store-path /mnt/nas/cloudstic
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Projects
+    ```
+  </Tab>
+
+  <Tab title="Environment Variables">
+    ```bash
+    # Set via environment variables
+    export CLOUDSTIC_STORE=local
+    export CLOUDSTIC_STORE_PATH=/backup/cloudstic
+
+    # Initialize (no flags needed)
+    cloudstic init
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Data
+    ```
+  </Tab>
+</Tabs>
+
+## Features
+
+### Atomic Writes
+
+The local store uses atomic writes for safety:
+
+1. Data is written to a temporary file with `.tmp` suffix
+2. The temporary file is renamed to the final path
+3. On POSIX systems, rename is atomic
+
+This ensures backups are never corrupted by interrupted writes.
+
+### Directory Structure
+
+The local store creates this structure:
+
+```
+backup_store/
+├── chunk/
+│   └── <sha256>           # Raw data chunks
+├── content/
+│   └── <sha256>           # Chunk manifests
+├── filemeta/
+│   └── <sha256>           # File metadata
+├── node/
+│   └── <sha256>           # HAMT nodes
+├── snapshot/
+│   └── <sha256>           # Snapshots
+├── index/
+│   ├── latest             # Latest snapshot pointer
+│   ├── snapshots          # Snapshot catalog
+│   └── packs              # Pack catalog (if packfiles enabled)
+├── keys/
+│   ├── 0-password         # Password key slot
+│   └── 1-recovery         # Recovery key slot (optional)
+└── config                 # Repository config
+```
+
+### Performance
+
+Local storage offers the best performance:
+
+- **Fast I/O**: Direct filesystem access
+- **No network latency**: Eliminates network round-trips
+- **Efficient deduplication**: Fast local lookups
+
+<Note>
+For networked filesystems (NFS, CIFS), performance depends on network speed and latency.
+</Note>
+
+## Best Practices
+
+### Backup Media
+
+<Tabs>
+  <Tab title="External Drives">
+    **Pros:**
+    - Fast local backups
+    - No cloud costs
+    - Physical control
+
+    **Considerations:**
+    - Keep drive disconnected when not in use
+    - Store securely (encryption protects data)
+    - Test restore regularly
+  </Tab>
+
+  <Tab title="NAS/Network Storage">
+    **Pros:**
+    - Centralized storage
+    - Always available
+    - Can back up multiple machines
+
+    **Considerations:**
+    - Network performance matters
+    - Ensure NAS has redundancy (RAID)
+    - Consider off-site backup copy
+  </Tab>
+</Tabs>
+
+### Permissions
+
+Ensure the backup directory has appropriate permissions:
+
+```bash
+# Create with restricted permissions
+mkdir -p /backup/cloudstic
+chmod 700 /backup/cloudstic
+
+# Initialize
+cloudstic init -store local -store-path /backup/cloudstic
+```
+
+### Monitoring Disk Space
+
+Monitor available space to avoid backup failures:
+
+```bash
+# Check disk usage
+df -h /backup/cloudstic
+
+# Check repository size
+du -sh /backup/cloudstic
+```
+
+Use `cloudstic prune` regularly to reclaim space from deleted snapshots.
+
+## Troubleshooting
+
+### Permission Denied
+
+If you see "permission denied" errors:
+
+```bash
+# Check directory ownership
+ls -la /path/to/backup
+
+# Fix ownership if needed
+sudo chown -R $USER:$USER /path/to/backup
+```
+
+### Disk Full
+
+If the backup fails with "no space left on device":
+
+1. Check available space: `df -h /backup`
+2. Run prune to reclaim space: `cloudstic prune`
+3. Consider forgetting old snapshots: `cloudstic forget --keep-last 10 --prune`
+
+### Network Mount Issues
+
+For network mounts that disconnect:
+
+```bash
+# Use autofs or systemd automount for reliability
+# Example /etc/fstab entry:
+//nas.local/backup /mnt/nas cifs credentials=/etc/nas.creds,uid=1000,gid=1000 0 0
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Backup Command" icon="upload" href="/commands/backup">
+    Create backups with local storage
+  </Card>
+  <Card title="Prune Command" icon="trash" href="/commands/prune">
+    Reclaim disk space
+  </Card>
+  <Card title="S3 Storage" icon="aws" href="/storage/s3">
+    Use cloud storage instead
+  </Card>
+  <Card title="SFTP Storage" icon="server" href="/storage/sftp">
+    Use remote SSH storage
+  </Card>
+</CardGroup>

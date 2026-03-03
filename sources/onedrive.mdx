@@ -1,0 +1,499 @@
+---
+title: OneDrive Source
+description: Back up files from Microsoft OneDrive with Cloudstic CLI
+---
+
+The **OneDrive** source backs up files from Microsoft OneDrive using the Microsoft Graph API. Cloudstic supports both full and incremental backups.
+
+## Source Types
+
+Cloudstic provides two OneDrive source types:
+
+- **`onedrive`** — Full scan (lists all files on every backup)
+- **`onedrive-changes`** — Incremental (uses Delta API, **recommended**)
+
+<Note>
+Use `onedrive-changes` for faster incremental backups. It only fetches changes since the last backup, making subsequent backups significantly faster.
+</Note>
+
+## Basic Usage
+
+### First-Time Setup
+
+On your first backup, Cloudstic will open your browser to authenticate with Microsoft:
+
+```bash
+cloudstic backup -source onedrive
+```
+
+You'll see:
+```
+Opening browser for authorization...
+```
+
+After signing in and granting permissions, the OAuth token is saved to `~/.config/cloudstic/onedrive_token.json` and automatically reused for future backups.
+
+### Incremental Backups (Recommended)
+
+Use the Delta API for faster backups:
+
+```bash
+cloudstic backup -source onedrive-changes
+```
+
+## Configuration Options
+
+### Source Flags
+
+| Flag | Description | Environment Variable |
+|------|-------------|---------------------|
+| `-source onedrive` | Full scan source | `CLOUDSTIC_SOURCE` |
+| `-source onedrive-changes` | Incremental source (recommended) | `CLOUDSTIC_SOURCE` |
+
+### Authentication
+
+| Environment Variable | Description |
+|---------------------|-------------|
+| `ONEDRIVE_CLIENT_ID` | Custom Azure AD app client ID (optional) |
+| `ONEDRIVE_TOKEN_FILE` | Path to OAuth token file (default: `~/.config/cloudstic/onedrive_token.json`) |
+
+### Optional Flags
+
+| Flag | Description |
+|------|-------------|
+| `-exclude <pattern>` | Exclude pattern (gitignore syntax, repeatable) |
+| `-exclude-file <path>` | Load exclude patterns from file |
+| `-tag <tag>` | Tag to apply to the snapshot (repeatable) |
+| `-dry-run` | Scan source without writing to store |
+
+## Examples
+
+### Backup OneDrive
+
+Back up your entire OneDrive:
+
+```bash
+cloudstic backup -source onedrive-changes
+```
+
+### Backup with Exclusions
+
+Exclude specific folders or file types:
+
+```bash
+cloudstic backup -source onedrive-changes \
+  -exclude "Screenshots/" \
+  -exclude "*.tmp" \
+  -exclude "Camera Roll/"
+```
+
+### Backup with Tags
+
+```bash
+cloudstic backup -source onedrive-changes \
+  -tag "onedrive" \
+  -tag "personal" \
+  -tag "$(date +%Y-%m)"
+```
+
+### Dry Run
+
+See what would be backed up:
+
+```bash
+cloudstic backup -source onedrive-changes -dry-run
+```
+
+## Authentication Methods
+
+Cloudstic supports two authentication methods for OneDrive:
+
+### 1. Built-in OAuth Client (Default)
+
+**How it works:**
+
+<Steps>
+  <Step title="First run">
+    Cloudstic opens your browser to Microsoft's login page.
+  </Step>
+  
+  <Step title="Sign in and consent">
+    Sign in with your Microsoft account and grant permissions.
+  </Step>
+  
+  <Step title="Token saved">
+    The OAuth token is saved to `~/.config/cloudstic/onedrive_token.json`.
+  </Step>
+  
+  <Step title="Automatic renewal">
+    Tokens are automatically refreshed when expired.
+  </Step>
+</Steps>
+
+**Permissions requested:**
+- `Files.Read` — Read your files
+- `Files.Read.All` — Read all files you have access to
+- `User.Read` — Read your profile (for account identification)
+- `offline_access` — Maintain access when you're not using the app
+
+### 2. Custom Azure AD App (Advanced)
+
+For organizational use, register your own Azure AD application:
+
+<Steps>
+  <Step title="Register app in Azure AD">
+    1. Go to Azure Portal > Azure Active Directory > App registrations
+    2. Click "New registration"
+    3. Name: "Cloudstic Backup"
+    4. Redirect URI: `http://localhost` (Public client/native)
+  </Step>
+  
+  <Step title="Configure API permissions">
+    Add delegated permissions:
+    - `Files.Read`
+    - `Files.Read.All`
+    - `User.Read`
+    - `offline_access`
+    
+    Grant admin consent if required by your organization.
+  </Step>
+  
+  <Step title="Copy client ID">
+    Copy the "Application (client) ID" from the Overview page.
+  </Step>
+  
+  <Step title="Set environment variable">
+    ```bash
+    export ONEDRIVE_CLIENT_ID="your-client-id-here"
+    cloudstic backup -source onedrive-changes
+    ```
+  </Step>
+</Steps>
+
+## OAuth Flow Details
+
+### First Backup
+
+When you run your first backup:
+
+1. **Browser opens** — Cloudstic starts a local HTTP server and opens your browser
+2. **Microsoft login** — You sign in to your Microsoft account
+3. **Consent screen** — Grant permissions to Cloudstic
+4. **Automatic callback** — The authorization code is captured automatically
+5. **Token exchange** — Cloudstic exchanges the code for an access token
+6. **Token saved** — Token is saved to `~/.config/cloudstic/onedrive_token.json`
+7. **Backup starts** — Files are scanned and backed up
+
+### Subsequent Backups
+
+1. **Token loaded** — Existing token is read from disk
+2. **Automatic refresh** — If expired, the token is refreshed using the refresh token
+3. **Backup starts** — No browser interaction needed
+
+### Token Location
+
+By default, tokens are stored at:
+- Linux/macOS: `~/.config/cloudstic/onedrive_token.json`
+- Windows: `%APPDATA%\cloudstic\onedrive_token.json`
+
+Customize the location:
+```bash
+export ONEDRIVE_TOKEN_FILE=/path/to/token.json
+```
+
+## How It Works
+
+### Full Scan (`onedrive`)
+
+<Steps>
+  <Step title="Get root item">
+    Fetch the root folder of your OneDrive.
+  </Step>
+  
+  <Step title="Iterative DFS">
+    Use depth-first search to traverse the folder tree.
+  </Step>
+  
+  <Step title="List children">
+    For each folder, list all child items via Microsoft Graph API.
+  </Step>
+  
+  <Step title="Apply exclusions">
+    Filter items based on exclude patterns.
+  </Step>
+  
+  <Step title="Emit items">
+    Process files and folders, computing paths from parent relationships.
+  </Step>
+</Steps>
+
+### Incremental Scan (`onedrive-changes`)
+
+<Steps>
+  <Step title="First backup">
+    Performs a full scan and captures a delta link (change token).
+  </Step>
+  
+  <Step title="Subsequent backups">
+    Uses the Delta API to fetch only modified/added/deleted items since the last token.
+  </Step>
+  
+  <Step title="Apply changes">
+    Updates the snapshot with changes, removing deleted files.
+  </Step>
+  
+  <Step title="Save new delta link">
+    Stores the new delta link for the next backup.
+  </Step>
+</Steps>
+
+### File Identification
+
+OneDrive files are identified by their Microsoft Graph item ID:
+- Item ID: `01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K`
+- Name: `report.pdf`
+- Path: `Documents/report.pdf` (computed from parent relationships)
+
+### Content Deduplication
+
+Cloudstic uses content-based hashing to avoid re-uploading unchanged files:
+- Files are hashed using FastCDC chunking
+- Unchanged chunks are skipped during upload
+- Only new or modified chunks are stored
+
+### Source Information
+
+Each snapshot records:
+- **Type**: `onedrive` or `onedrive-changes`
+- **Account**: User principal name (e.g., `user@outlook.com`)
+- **Path**: `onedrive://`
+
+## Performance Considerations
+
+### Full Scan Performance
+
+- **First backup**: 10-50 files/second (limited by API rate limits)
+- **API calls**: ~1 request per folder + pagination
+- **Bottleneck**: Network latency and API throttling
+
+### Incremental Performance
+
+- **Small changes**: Completes in seconds (only fetches changes)
+- **Large changes**: Proportional to number of changed files
+- **Recommended**: Use `onedrive-changes` for faster backups
+
+### API Rate Limits
+
+Microsoft Graph API has throttling limits:
+- **Requests per second**: Varies by workload type
+- **Retry-After**: Honor the `Retry-After` header on 429 responses
+
+Cloudstic automatically retries on throttling errors (HTTP 429 and 503).
+
+## OneDrive Specifics
+
+### OneNote Notebooks
+
+OneNote notebooks are represented as "package" items in OneDrive and are **not backed up** because:
+- They're stored in a proprietary format
+- They're not downloadable via the `/content` endpoint
+- Sections and pages are not individual files
+
+<Note>
+To back up OneNote content, export notebooks to PDF or other formats manually before backing up.
+</Note>
+
+### Folder Structure
+
+OneDrive maintains a hierarchical folder structure. Cloudstic:
+- Preserves the original folder hierarchy
+- Computes full paths from parent references
+- Stores items under their canonical path
+
+### Deleted Files
+
+Deleted files are automatically tracked when using `onedrive-changes`:
+- The Delta API reports deletions
+- Cloudstic removes deleted files from the snapshot
+- Files are not restored from the recycle bin
+
+## Common Use Cases
+
+### Personal Backup
+
+```bash
+# Backup your entire OneDrive
+cloudstic backup -source onedrive-changes \
+  -tag "personal" \
+  -tag "onedrive"
+```
+
+### Exclude Photos
+
+Skip camera uploads and screenshots:
+
+```bash
+cloudstic backup -source onedrive-changes \
+  -exclude "Pictures/Camera Roll/" \
+  -exclude "Pictures/Screenshots/" \
+  -tag "documents"
+```
+
+### Selective Backup
+
+Back up only important folders:
+
+```bash
+cloudstic backup -source onedrive-changes \
+  -exclude "Music/" \
+  -exclude "Videos/" \
+  -exclude "Pictures/" \
+  -tag "documents-only"
+```
+
+### Automated Backups
+
+Schedule automated backups:
+
+```bash
+#!/bin/bash
+# /usr/local/bin/onedrive-backup.sh
+
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-backup-bucket
+export ONEDRIVE_TOKEN_FILE=/etc/cloudstic/onedrive_token.json
+
+cloudstic backup -source onedrive-changes \
+  -tag "automated" \
+  -tag "$(date +%Y-%m-%d)"
+```
+
+Add to crontab:
+```bash
+0 2 * * * /usr/local/bin/onedrive-backup.sh
+```
+
+## Troubleshooting
+
+### Authentication Failed
+
+```bash
+Error: oauth2: cannot fetch token
+```
+
+**Solutions:**
+- Delete the token file and re-authenticate:
+  ```bash
+  rm ~/.config/cloudstic/onedrive_token.json
+  cloudstic backup -source onedrive-changes
+  ```
+- Check that you have internet connectivity
+- Verify your Microsoft account credentials
+
+### Token Expired
+
+```bash
+Error: token expired and refresh failed
+```
+
+**Solutions:**
+- Delete the token and re-authenticate
+- Ensure `offline_access` permission was granted
+- Check that the token file is not corrupted
+
+### Throttling
+
+```bash
+Error: 429 Too Many Requests
+```
+
+**Solutions:**
+- Cloudstic automatically retries with exponential backoff
+- Wait a few minutes and try again
+- For frequent backups, ensure you're using `onedrive-changes`
+
+### Permission Denied
+
+```bash
+Error: 403 Forbidden
+```
+
+**Solutions:**
+- Ensure you granted the required permissions during OAuth
+- For custom Azure AD apps, verify API permissions are configured correctly
+- Grant admin consent if required by your organization
+
+### Slow Backups
+
+If backups are taking too long:
+
+1. **Switch to `onedrive-changes`** for incremental backups
+2. **Add exclude patterns** to skip unnecessary folders
+3. **Check API throttling** — OneDrive may be rate limiting your requests
+4. **Schedule during off-peak hours**
+
+## Environment Variables
+
+Set default OneDrive configuration:
+
+```bash
+export CLOUDSTIC_SOURCE=onedrive-changes
+export ONEDRIVE_TOKEN_FILE=~/.config/cloudstic/onedrive_token.json
+
+# For custom Azure AD apps
+export ONEDRIVE_CLIENT_ID="your-client-id"
+
+# Now run backup
+cloudstic backup
+```
+
+## Personal vs. Business Accounts
+
+### Personal Accounts (outlook.com, live.com, hotmail.com)
+
+Cloudstic supports personal Microsoft accounts out of the box:
+
+```bash
+cloudstic backup -source onedrive-changes
+```
+
+Sign in with your personal Microsoft account when prompted.
+
+### Business/Education Accounts (Office 365, Microsoft 365)
+
+For organizational accounts:
+
+1. **Check with IT** — Some organizations restrict third-party app access
+2. **Use custom Azure AD app** — Register your own app (see above)
+3. **Request admin consent** — May be required for organizational accounts
+
+<Note>
+If you encounter permission errors with a business account, contact your IT administrator to enable third-party app access or register a custom Azure AD application.
+</Note>
+
+## OneDrive for Business
+
+OneDrive for Business accounts work the same way as personal accounts, but:
+
+- You may need admin consent for API permissions
+- Some organizations block third-party apps entirely
+- SharePoint sites are not included (OneDrive only)
+
+To back up SharePoint sites, use OneDrive for Business sync folders or contact your administrator for API access.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Google Drive Source" icon="google" href="/sources/google-drive">
+    Learn about backing up Google Drive
+  </Card>
+  <Card title="Azure AD Setup" icon="microsoft" href="/guides/azure-ad-setup">
+    Register a custom Azure AD application
+  </Card>
+  <Card title="Scheduling Backups" icon="clock" href="/guides/scheduling">
+    Automate backups with cron or systemd
+  </Card>
+  <Card title="Restore Files" icon="download" href="/commands/restore">
+    Learn how to restore your backed up files
+  </Card>
+</CardGroup>

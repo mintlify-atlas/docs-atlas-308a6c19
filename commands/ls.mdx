@@ -1,0 +1,237 @@
+---
+title: cloudstic ls
+description: List files and directories within a specific snapshot
+---
+
+List files and directories within a specific snapshot, displaying the full directory tree with file sizes.
+
+## Usage
+
+```bash
+cloudstic ls [snapshot_id] [options]
+```
+
+If no snapshot ID is provided, the latest snapshot is used.
+
+## Options
+
+<ParamField path="snapshot_id" type="string" default="latest">
+  Snapshot ID to list files from. Can be:
+  - Full snapshot hash (e.g., `a3f8d2e1...`)
+  - Short prefix (e.g., `a3f8d2`)
+  - `latest` (default) — lists files from the most recent snapshot
+</ParamField>
+
+### Global Options
+
+
+
+- Storage backend configuration (`-store`, `-store-path`, etc.)
+- Encryption credentials (`-encryption-password`, `-encryption-key`, etc.)
+- Verbosity flags (`-verbose`, `-quiet`, `-debug`)
+
+<ParamField path="-verbose" type="boolean" default="false">
+  Enable verbose output showing detailed progress while loading file metadata.
+</ParamField>
+
+## Examples
+
+<CodeGroup>
+```bash Latest Snapshot
+cloudstic ls
+```
+
+```bash Specific Snapshot
+cloudstic ls a3f8d2e1
+```
+
+```bash With Verbose Output
+cloudstic ls latest -verbose
+```
+
+```bash Remote Repository
+cloudstic ls abc123 -store s3 -store-path my-bucket
+```
+</CodeGroup>
+
+## Output
+
+The command displays a hierarchical tree of all files and directories in the snapshot:
+
+```plaintext
+Listing files for snapshot: snapshot/a3f8d2e1... (Created: 2024-03-15T10:23:15Z)
+
+  documents/
+    ├─ reports/
+    │  ├─ Q1-2024.pdf (2.4 MiB)
+    │  └─ Q2-2024.pdf (3.1 MiB)
+    ├─ presentations/
+    │  ├─ overview.pptx (8.7 MiB)
+    │  └─ roadmap.pptx (5.2 MiB)
+    └─ notes.txt (12.3 KiB)
+  photos/
+    ├─ 2024/
+    │  ├─ IMG_001.jpg (4.2 MiB)
+    │  └─ IMG_002.jpg (3.9 MiB)
+    └─ archive.zip (156.7 MiB)
+
+8 entries listed in 245ms
+```
+
+### Tree Structure
+
+- **Directories** are shown without a size
+- **Files** are shown with their uncompressed size in parentheses
+- Files and directories are sorted alphabetically within each level
+- Indentation shows the directory hierarchy
+
+<Note>
+File sizes shown are the original uncompressed sizes, not the deduplicated/compressed size in the repository.
+</Note>
+
+## Snapshot Selection
+
+You can specify snapshots in multiple ways:
+
+### By Full Hash
+
+```bash
+cloudstic ls a3f8d2e1c4b5a6f9d0e7c8b1a2f3d4e5
+```
+
+### By Short Prefix
+
+```bash
+cloudstic ls a3f8d2
+```
+
+Cloudstic will match the shortest unique prefix. If multiple snapshots match, an error is returned with the ambiguous matches.
+
+### By "latest"
+
+```bash
+cloudstic ls latest
+```
+
+Lists files from the most recent snapshot based on creation time.
+
+<Tip>
+Use `cloudstic list` to view all available snapshots with their IDs and creation times.
+</Tip>
+
+## Use Cases
+
+### Finding Files
+
+Browse the snapshot tree to find specific files before restoring:
+
+```bash
+cloudstic ls latest | grep report
+```
+
+### Verifying Backups
+
+Confirm that expected files were included in a backup:
+
+```bash
+cloudstic ls abc123
+```
+
+### Comparing Snapshots
+
+List files from different snapshots to see what changed:
+
+```bash
+cloudstic ls snapshot-1 > files-1.txt
+cloudstic ls snapshot-2 > files-2.txt
+diff files-1.txt files-2.txt
+```
+
+Or use the built-in `cloudstic diff` command for structured comparison:
+
+```bash
+cloudstic diff snapshot-1 snapshot-2
+```
+
+## Performance
+
+The `ls` command must load all file metadata from the snapshot to build the tree. Performance depends on:
+
+- **File count** — More files take longer to load
+- **Storage backend** — Cloud storage (S3/B2) is slower than local storage
+- **HAMT depth** — Deeper trees require more object fetches
+
+Typical performance:
+
+- 1,000 files: less than 1 second (local storage)
+- 10,000 files: 2-5 seconds (cloud storage)
+- 100,000 files: 20-60 seconds (cloud storage)
+
+<Tip>
+For large snapshots, use `-verbose` to see progress as metadata is loaded. The HAMT tree structure ensures logarithmic scaling even for millions of files.
+</Tip>
+
+## HAMT Tree Structure
+
+Cloudstic stores file metadata in a persistent Hash Array Mapped Trie (HAMT):
+
+- Files are indexed by their path (e.g., `documents/report.pdf`)
+- Each HAMT node is a separate object in the repository
+- The tree structure provides efficient lookups and updates
+- Only changed subtrees are rewritten during backups (structural sharing)
+
+The `ls` command recursively walks the HAMT tree from the snapshot's root node to build the full file listing.
+
+## Encryption
+
+If your repository is encrypted, you must provide valid credentials:
+
+```bash
+cloudstic ls -encryption-password "my secret passphrase"
+```
+
+Or using environment variables:
+
+```bash
+export CLOUDSTIC_ENCRYPTION_PASSWORD="my secret passphrase"
+cloudstic ls
+```
+
+All file metadata is encrypted at rest. The `ls` command decrypts objects as needed to build the tree.
+
+<Warning>
+Without valid encryption credentials, the command will fail with an authentication error.
+</Warning>
+
+## Machine-Readable Output
+
+For scripting and automation, the tree output can be parsed, but consider using the raw snapshot object for structured data:
+
+```bash
+# Get snapshot object as JSON
+cloudstic cat snapshot/a3f8d2e1 | jq
+
+# Walk HAMT tree programmatically
+cloudstic cat snapshot/a3f8d2e1 | jq -r '.root' | xargs -I {} cloudstic cat {}
+```
+
+For more complex operations, consider using the Cloudstic Go library directly.
+
+## Size Formatting
+
+File sizes are displayed in human-readable format:
+
+- **B** — Bytes (< 1 KiB)
+- **KiB** — Kibibytes (1024 bytes)
+- **MiB** — Mebibytes (1024 KiB)
+- **GiB** — Gibibytes (1024 MiB)
+- **TiB** — Tebibytes (1024 GiB)
+
+Sizes use binary prefixes (base 1024) following IEC 60027-2 standard.
+
+## See Also
+
+- [cloudstic list](/commands/list) — List all backup snapshots
+- [cloudstic restore](/commands/restore) — Restore files from a snapshot
+- [cloudstic diff](/commands/diff) — Compare two snapshots to see what changed
+- [cloudstic cat](/commands/cat) — Display raw JSON for snapshot objects

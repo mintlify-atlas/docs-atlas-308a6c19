@@ -1,0 +1,597 @@
+---
+title: Encryption Model
+description: How Cloudstic encrypts backups with AES-256-GCM and manages encryption keys
+---
+
+Cloudstic encrypts all backup data at rest using **AES-256-GCM** authenticated encryption. Encryption is transparent at the object store layer - the backup engine doesn't need to be aware of it.
+
+## Threat Model
+
+Cloudstic's encryption is designed to protect against:
+
+<Info>
+**At-rest compromise**: If your Backblaze B2 account or S3 bucket is compromised, the attacker cannot read your backup data without the encryption key.
+</Info>
+
+- **Storage provider breach** - B2, S3, PostgreSQL data is unreadable without keys
+- **Tenant isolation (SaaS)** - Even if database RLS is bypassed, each tenant's data is encrypted with a unique key
+- **Confirmation-of-a-file attacks** - Keyed HMAC prevents storage providers from confirming file contents by hashing known plaintext
+- **Key loss (recovery keys)** - BIP39 mnemonic recovery keys provide an offline backup path
+
+**Location:** `docs/encryption.md:9-17`
+
+## Ciphertext Format
+
+Every encrypted object uses a consistent binary format:
+
+```
+┌────────┬────────────┬──────────────┬────────────┐
+│ Version│   Nonce    │  Ciphertext  │  GCM Tag   │
+│ 1 byte │  12 bytes  │   Variable   │  16 bytes  │
+└────────┴────────────┴──────────────┴────────────┘
+
+Total overhead: 29 bytes per object
+```
+
+- **Version `0x01`**: AES-256-GCM with 12-byte random nonce
+- **Nonce**: Randomly generated for each encryption (never reused)
+- **GCM Tag**: 16-byte authentication tag (detects tampering)
+
+**Location:** `pkg/crypto/crypto.go:23-29` and `docs/encryption.md:18-29`
+
+### Encryption Process
+
+```go
+// Generate random nonce
+nonce := make([]byte, 12)
+rand.Read(nonce)
+
+// Encrypt with AES-256-GCM
+gcm := cipher.NewGCM(aes.NewCipher(encryptionKey))
+ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+
+// Assemble: version || nonce || ciphertext
+out := []byte{0x01}
+out = append(out, nonce...)
+out = append(out, ciphertext...)  // includes 16-byte tag
+```
+
+**Location:** `pkg/crypto/crypto.go:38-54`
+
+### Decryption Process
+
+```go
+// Parse format
+version := data[0]
+if version != 0x01 {
+    return nil, ErrInvalidCiphertext
+}
+nonce := data[1:13]
+sealed := data[13:]
+
+// Decrypt and verify tag
+gcm := cipher.NewGCM(aes.NewCipher(encryptionKey))
+plaintext, err := gcm.Open(nil, nonce, sealed, nil)
+if err != nil {
+    return nil, ErrDecryptFailed  // wrong key or tampered data
+}
+```
+
+**Location:** `pkg/crypto/crypto.go:59-80`
+
+<Note>
+AES-256-GCM provides both **encryption** (confidentiality) and **authentication** (integrity). Tampering with the ciphertext causes decryption to fail.
+</Note>
+
+## Key Hierarchy
+
+Cloudstic uses a multi-tier key hierarchy to separate key management from data encryption:
+
+```
+Platform Key / Password / Recovery Key
+         ↓ (wraps)
+    Master Key (256-bit, per tenant)
+         ↓ HKDF-SHA256(info="cloudstic-backup-v1")
+    Encryption Key (256-bit for AES-256-GCM)
+         ↓ HKDF-SHA256(info="cloudstic-dedup-mac-v1")
+    Dedup HMAC Key (256-bit for chunk addressing)
+```
+
+**Location:** `docs/encryption.md:36-58`
+
+### Master Key
+
+- **256-bit random key** generated from `crypto/rand` at repository initialization
+- **Never stored in plaintext**
+- Wrapped by one or more key slots (password, platform key, KMS, recovery key)
+- Unique per tenant (CLI repo or SaaS tenant)
+
+**Location:** `docs/encryption.md:60-63`
+
+### Key Derivation
+
+The master key is not used directly for encryption. Instead, keys are derived using **HKDF-SHA256**:
+
+#### Encryption Key
+
+```go
+encryptionKey := HKDF-SHA256(
+    secret = masterKey,
+    salt   = nil,
+    info   = "cloudstic-backup-v1",
+    length = 32,
+)
+```
+
+**Location:** `pkg/crypto/crypto.go:90-97` and `docs/encryption.md:106-116`
+
+This key is used for **AES-256-GCM encryption** of all backup objects (chunks, metadata, snapshots).
+
+#### Dedup HMAC Key
+
+```go
+dedupKey := HKDF-SHA256(
+    secret = encryptionKey,
+    salt   = nil,
+    info   = "cloudstic-dedup-mac-v1",
+    length = 32,
+)
+```
+
+**Location:** `pkg/crypto/crypto.go:124` and `docs/encryption.md:118-127`
+
+This key is used for **HMAC-SHA256** chunk addressing to prevent confirmation-of-a-file attacks (see [Content Addressing](/concepts/content-addressing#preventing-plaintext-hash-leakage)).
+
+<Tip>
+HKDF is a cryptographic PRF (pseudorandom function). Chaining derivations is safe - leaking the dedup key doesn't compromise the encryption key.
+</Tip>
+
+## Key Slots
+
+A **key slot** stores the master key encrypted ("wrapped") by a wrapping key. Multiple slots can coexist, each using a different wrapping mechanism.
+
+| Slot Type | Wrapping Key Source | Purpose |
+|-----------|---------------------|----------|
+| `platform` | `PLATFORM_ENCRYPTION_KEY` env var | Legacy platform recovery (plaintext hex key) |
+| `kms-platform` | AWS KMS CMK | HSM-backed platform recovery (envelope encryption) |
+| `password` | Argon2id(user password) | Zero-knowledge user access |
+| `recovery` | Random 256-bit key (BIP39 mnemonic) | Offline backup (24-word seed phrase) |
+
+**Location:** `docs/encryption.md:65-77`
+
+### Key Slot Storage
+
+Key slots are stored in **two locations**:
+
+1. **PostgreSQL** (`app.encryption_key_slots` table) - Primary source for SaaS web application
+2. **Object store** (`keys/<type>-<label>` objects) - Best-effort copy for CLI access and disaster recovery
+
+<Info>
+Key slot objects are stored **unencrypted** in the object store. The `EncryptedStore` decorator passes through any object under the `keys/` prefix without encrypting it.
+</Info>
+
+This avoids the chicken-and-egg problem of needing the encryption key to read the encryption key.
+
+**Location:** `docs/encryption.md:79-104` and `AGENTS.md:91-93`
+
+### Key Slot Format
+
+```json
+{
+  "slot_type": "password",
+  "wrapped_key": "AaQxMjM0NTY3ODkwYWJjZGVm...",
+  "label": "default",
+  "kdf_params": {
+    "algorithm": "argon2id",
+    "salt": "cmFuZG9tc2FsdA==",
+    "time": 3,
+    "memory": 65536,
+    "threads": 4
+  }
+}
+```
+
+`wrapped_key` is base64-encoded ciphertext:
+
+```
+nonce (12 bytes) || AES-GCM(masterKey) || tag (16 bytes)
+```
+
+**Location:** `docs/encryption.md:89-97`
+
+## Key Slot Types
+
+### Password Slot
+
+User-chosen password wrapped with **Argon2id** key derivation:
+
+```go
+// Derive wrapping key from password
+salt := randomBytes(16)
+wrappingKey := argon2.IDKey(
+    password,
+    salt,
+    time=3,        // iterations
+    memory=64*1024, // 64 MiB
+    threads=4,
+    keyLen=32,
+)
+
+// Wrap master key
+wrappedKey := AES-GCM-Encrypt(masterKey, wrappingKey)
+
+// Store slot
+slot := KeySlot{
+    Type: "password",
+    WrappedKey: base64(wrappedKey),
+    KDFParams: {
+        "salt": base64(salt),
+        "time": 3,
+        "memory": 65536,
+        "threads": 4,
+    },
+}
+```
+
+**Location:** `pkg/crypto/crypto.go:140-157` and `docs/encryption.md:42-43`
+
+<Note>
+**Argon2id** is a memory-hard password hashing algorithm designed to resist GPU/ASIC attacks. The default parameters (~64MB memory, ~1 second on modern hardware) provide strong protection against brute-force attacks.
+</Note>
+
+### Platform Slot (Legacy)
+
+The platform key is a **32-byte hex-encoded key** stored in the `PLATFORM_ENCRYPTION_KEY` environment variable:
+
+```bash
+export PLATFORM_ENCRYPTION_KEY="a3f5b8c9d1e2f4a6..."
+```
+
+All tenants' master keys are wrapped with this key. It must be stored securely (Vault, AWS Secrets Manager, etc.).
+
+<Warning>
+**Legacy approach**: Stores plaintext key in environment. Prefer `kms-platform` slots for production deployments.
+</Warning>
+
+**Location:** `docs/encryption.md:311-319`
+
+### KMS-Platform Slot
+
+Uses **AWS KMS envelope encryption** for HSM-backed key protection:
+
+```
+AWS KMS CMK (Customer Managed Key)
+    ↓ encrypts
+Data Encryption Key (DEK, 256-bit)
+    ↓ wraps
+Master Key
+```
+
+Process:
+1. Call `kms:GenerateDataKey` to get a random DEK and its KMS-encrypted form
+2. Use the plaintext DEK to wrap the master key with AES-GCM
+3. Discard the plaintext DEK
+4. Store the **encrypted DEK** and **wrapped master key** in the slot
+
+To unwrap:
+1. Call `kms:Decrypt` to decrypt the DEK
+2. Use the plaintext DEK to unwrap the master key
+3. Discard the plaintext DEK
+
+**Benefits:**
+- Plaintext wrapping key **never** leaves the KMS HSM
+- KMS audit logs track all decrypt operations
+- IAM policies control access
+- Automatic annual key rotation
+
+**Location:** `docs/encryption.md:298-310` and `pkg/store/kms.go`
+
+<Tip>
+Set `PLATFORM_KMS_KEY_ARN` in the server environment, or use `-kms-key-arn` flag in the CLI.
+</Tip>
+
+### Recovery Key Slot
+
+A **BIP39 24-word mnemonic** that wraps the master key. Provides an offline backup mechanism for key recovery.
+
+#### Generation
+
+```go
+// Generate 256-bit random key
+recoveryKey := randomBytes(32)
+
+// Encode as BIP39 mnemonic (24 words)
+mnemonic := bip39.Encode(recoveryKey)
+// Example: "abandon ability able about above absent absorb abstract ..."
+
+// Wrap master key with recovery key
+wrappedKey := AES-GCM-Encrypt(masterKey, recoveryKey)
+
+// Store slot (recovery key is NOT stored)
+slot := KeySlot{
+    Type: "recovery",
+    WrappedKey: base64(wrappedKey),
+    Label: "default",
+}
+
+// Display mnemonic ONCE to user
+fmt.Println("Recovery key (write this down securely):")
+fmt.Println(mnemonic)
+```
+
+**Location:** `docs/encryption.md:219-232`
+
+#### Recovery
+
+```go
+// User provides 24-word mnemonic
+mnemonic := "abandon ability able about above ..."
+
+// Decode to raw 256-bit key
+recoveryKey := bip39.Decode(mnemonic)
+
+// Unwrap master key
+masterKey := AES-GCM-Decrypt(wrappedKey, recoveryKey)
+
+// Derive encryption key
+encryptionKey := HKDF-SHA256(masterKey, "cloudstic-backup-v1")
+```
+
+**Location:** `docs/encryption.md:234-239`
+
+<Warning>
+The mnemonic is displayed **only once** during generation. If lost, the recovery key cannot be used. Store it securely offline (printed, password manager, safe).
+</Warning>
+
+### CLI Usage
+
+```bash
+# Initialize with password and recovery key
+cloudstic init --encryption-password mypass --recovery
+
+# Add recovery key to existing repo
+cloudstic add-recovery-key --encryption-password mypass
+
+# Use recovery key to unlock repo
+cloudstic backup --recovery-key "abandon ability able about above ..."
+
+# Or via environment variable
+export CLOUDSTIC_RECOVERY_KEY="abandon ability able about above ..."
+cloudstic backup
+```
+
+**Location:** `docs/encryption.md:241-259`
+
+## Encryption Store Layer
+
+The `EncryptedStore` is a decorator in the store stack:
+
+```
+BackupEngine
+    ↓
+CompressedStore  (zstd)
+    ↓
+EncryptedStore   (AES-256-GCM) ← You are here
+    ↓
+MeteredStore
+    ↓
+Backend (S3, B2, etc.)
+```
+
+**Location:** `docs/encryption.md:136-149`
+
+### Put Operation
+
+```go
+func (e *EncryptedStore) Put(ctx, key string, data []byte) error {
+    // Pass through keys/* unencrypted
+    if strings.HasPrefix(key, "keys/") {
+        return e.inner.Put(ctx, key, data)
+    }
+    
+    // Encrypt data
+    ciphertext, err := crypto.Encrypt(data, e.encryptionKey)
+    if err != nil {
+        return err
+    }
+    
+    // Delegate to inner store
+    return e.inner.Put(ctx, key, ciphertext)
+}
+```
+
+**Location:** `pkg/store/encrypted.go`
+
+### Get Operation
+
+```go
+func (e *EncryptedStore) Get(ctx, key string) ([]byte, error) {
+    // Pass through keys/* unencrypted
+    if strings.HasPrefix(key, "keys/") {
+        return e.inner.Get(ctx, key)
+    }
+    
+    // Fetch from inner store
+    data, err := e.inner.Get(ctx, key)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Check if encrypted (version byte 0x01)
+    if !crypto.IsEncrypted(data) {
+        // Legacy unencrypted data - return as-is
+        return data, nil
+    }
+    
+    // Decrypt
+    plaintext, err := crypto.Decrypt(data, e.encryptionKey)
+    if err != nil {
+        return nil, err
+    }
+    
+    return plaintext, nil
+}
+```
+
+**Location:** `pkg/store/encrypted.go` and `docs/encryption.md:145-148`
+
+<Info>
+The `EncryptedStore` gracefully handles **legacy unencrypted data** by checking the version byte. If data doesn't start with `0x01`, it's returned as-is.
+</Info>
+
+This allows gradual migration from unencrypted to encrypted repositories.
+
+**Location:** `docs/encryption.md:30-34`
+
+## Content Addressing with Encryption
+
+Encryption uses **random nonces**, so encrypting the same plaintext twice produces different ciphertext. How does deduplication still work?
+
+<Note>
+Deduplication happens **before encryption** by checking if the content-addressed key already exists.
+</Note>
+
+### Chunk Deduplication Flow
+
+```go
+// 1. Chunk the file (content-defined boundaries)
+chunks := FastCDC(fileStream)
+
+for chunk := range chunks {
+    // 2. Hash with HMAC (using dedup key)
+    chunkHash := HMAC-SHA256(dedupKey, chunk)
+    key := "chunk/" + chunkHash
+    
+    // 3. Check existence BEFORE encrypting
+    exists, _ := store.Exists(ctx, key)
+    if exists {
+        continue  // Skip upload - chunk already stored
+    }
+    
+    // 4. Compress and encrypt
+    compressed := zstd.Compress(chunk)
+    encrypted := AES-GCM-Encrypt(compressed, encryptionKey)
+    
+    // 5. Upload
+    store.Put(ctx, key, encrypted)
+}
+```
+
+**Location:** `internal/engine/chunker.go:166-186` and `docs/encryption.md:157-170`
+
+Because the **key** is derived from plaintext (via HMAC), identical chunks produce identical keys. The `Exists()` check short-circuits the upload.
+
+### Cross-Tenant Deduplication
+
+<Info>
+Each tenant/repository has a **unique dedup key**, so cross-tenant deduplication does **not** occur. This is intentional for privacy.
+</Info>
+
+With tenant-specific dedup keys:
+- Tenant A's `chunk/a3f5b8...` is HMAC-SHA256(**keyA**, data)
+- Tenant B's `chunk/7d9e2c...` is HMAC-SHA256(**keyB**, data)
+- Even if `data` is identical, the keys differ
+
+**Location:** `docs/encryption.md:164-169`
+
+## Key Rotation
+
+### Platform Key Rotation
+
+When rotating the platform key (e.g., `PLATFORM_ENCRYPTION_KEY` env var changes):
+
+```go
+// 1. For each tenant:
+for tenant := range tenants {
+    // 2. Unwrap master key with OLD platform key
+    masterKey := UnwrapKey(tenant.WrappedKey, oldPlatformKey)
+    
+    // 3. Re-wrap with NEW platform key
+    newWrappedKey := WrapKey(masterKey, newPlatformKey)
+    
+    // 4. Update database
+    db.Exec("UPDATE encryption_key_slots SET wrapped_key = ? WHERE tenant_id = ?",
+        newWrappedKey, tenant.ID)
+}
+```
+
+This is **cheap** - no backup data re-encryption needed. Only the key slots are updated.
+
+**Location:** `docs/encryption.md:172-183`
+
+### Master Key Rotation (Rare)
+
+<Warning>
+Rotating the master key requires **re-encrypting all backup data**. Only do this in response to a security incident.
+</Warning>
+
+Process:
+1. Generate new master key
+2. Create new key slots with new master key
+3. Keep old key in memory for dual-key reads
+4. New writes use new key; reads try new key first, fall back to old key on authentication failure
+5. Background job re-encrypts all objects with new key
+6. Once complete, retire old key slots
+
+**Location:** `docs/encryption.md:185-197`
+
+## Security Best Practices
+
+### For CLI Users
+
+<Tip>
+1. Use a **strong, unique password** for password slots (12+ characters, mix of types)
+2. Generate and securely store a **recovery key** during `init`
+3. Consider **KMS-backed keys** if using AWS (`-kms-key-arn` flag)
+4. Never store passwords in plaintext scripts or environment variables
+</Tip>
+
+### For SaaS Deployments
+
+<Tip>
+1. Use **KMS-platform slots** with AWS KMS for platform keys
+2. Enable **automatic key rotation** in KMS (annual)
+3. Store platform keys in a **secrets manager** (Vault, AWS Secrets Manager)
+4. Implement **audit logging** for all key access
+5. Use **PostgreSQL RLS** for tenant isolation (defense in depth)
+6. Generate **recovery keys** for enterprise customers
+</Tip>
+
+**Location:** `docs/encryption.md:288-325`
+
+## CLI Key Resolution Flow
+
+When the CLI opens an encrypted repository:
+
+```
+1. List keys/* objects to discover available slots
+   ↓
+2. If -kms-key-arn provided, try kms-platform slots
+   └─ Call kms:Decrypt to unwrap DEK
+   └─ Use DEK to unwrap master key
+   ↓
+3. Try platform key (PLATFORM_ENCRYPTION_KEY env var)
+   └─ Unwrap master key directly
+   ↓
+4. Try password (-encryption-password flag or CLOUDSTIC_PASSWORD)
+   └─ Derive wrapping key with Argon2id
+   └─ Unwrap master key
+   ↓
+5. Try recovery key (-recovery-key flag or CLOUDSTIC_RECOVERY_KEY)
+   └─ Decode BIP39 mnemonic to raw key
+   └─ Unwrap master key
+   ↓
+6. Derive encryption key: HKDF-SHA256(masterKey, "cloudstic-backup-v1")
+   ↓
+7. Derive dedup key: HKDF-SHA256(encryptionKey, "cloudstic-dedup-mac-v1")
+   ↓
+8. Create EncryptedStore with encryption key
+```
+
+**Location:** `docs/encryption.md:287-294`
+
+## Further Reading
+
+- [Content Addressing](/concepts/content-addressing) - How HMAC-keyed hashing prevents confirmation-of-a-file attacks
+- [Architecture](/concepts/architecture#store-decorator-stack) - How EncryptedStore fits into the storage stack
+- [Key Slots CLI Reference](/commands/init) - Command-line encryption options

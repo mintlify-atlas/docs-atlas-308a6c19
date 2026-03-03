@@ -1,0 +1,303 @@
+---
+title: cloudstic diff
+description: Compare two snapshots to see what files changed
+---
+
+Compare two snapshots to identify added, modified, and removed files. Useful for understanding what changed between backups.
+
+## Usage
+
+```bash
+cloudstic diff [options] <snapshot_1> <snapshot_2>
+```
+
+Both snapshot arguments are required. You can use `latest` as an alias for the most recent snapshot.
+
+## Arguments
+
+<ParamField path="snapshot_1" type="string" required>
+  First snapshot to compare. Can be:
+  - Full snapshot hash (e.g., `a3f8d2e1...`)
+  - Short prefix (e.g., `a3f8d2`)
+  - `latest` — the most recent snapshot
+</ParamField>
+
+<ParamField path="snapshot_2" type="string" required>
+  Second snapshot to compare. Can be:
+  - Full snapshot hash (e.g., `b1e9c7d3...`)
+  - Short prefix (e.g., `b1e9c7`)
+  - `latest` — the most recent snapshot
+</ParamField>
+
+## Options
+
+### Global Options
+
+
+
+- Storage backend configuration (`-store`, `-store-path`, etc.)
+- Encryption credentials (`-encryption-password`, `-encryption-key`, etc.)
+- Verbosity flags (`-verbose`, `-quiet`, `-debug`)
+
+<ParamField path="-verbose" type="boolean" default="false">
+  Enable verbose output showing detailed information about the diff operation, including unchanged files.
+</ParamField>
+
+## Examples
+
+<CodeGroup>
+```bash Compare Two Snapshots
+cloudstic diff a3f8d2 b1e9c7
+```
+
+```bash Compare Against Latest
+cloudstic diff abc123 latest
+```
+
+```bash With Verbose Output
+cloudstic diff a3f8d2 b1e9c7 -verbose
+```
+
+```bash Remote Repository
+cloudstic diff old-snapshot new-snapshot \
+  -store s3 \
+  -store-path my-backup-bucket \
+  -s3-region us-west-2
+```
+</CodeGroup>
+
+## Output
+
+The command displays a list of changed files with change types:
+
+```plaintext
+Diffing snapshot/a3f8d2e1... vs snapshot/b1e9c7d3...
+
+added documents/report-Q2.pdf
+modified documents/notes.txt
+removed temp/cache.dat
+added photos/2024/IMG_003.jpg
+modified config/settings.json
+```
+
+### Change Types
+
+- **added** — File exists in snapshot 2 but not in snapshot 1
+- **modified** — File exists in both snapshots but content changed
+- **removed** — File exists in snapshot 1 but not in snapshot 2
+
+<Note>
+The diff is directional: `diff A B` shows changes going from A to B. To see the reverse, swap the arguments: `diff B A`.
+</Note>
+
+## How It Works
+
+Cloudstic compares snapshots efficiently using content addressing:
+
+1. Load both snapshot objects to get their HAMT root nodes
+2. Traverse both HAMT trees in parallel
+3. Compare file metadata refs (content hashes)
+4. Files with the same ref are identical (unchanged)
+5. Files with different refs or missing from one tree are changed
+
+This approach is fast because:
+
+- Only metadata is compared, not file contents
+- Unchanged files are detected instantly via hash comparison
+- HAMT structure allows efficient parallel traversal
+- No need to download or hash file data
+
+<Tip>
+The diff algorithm uses the HAMT structure for O(n) performance even on large snapshots with millions of files.
+</Tip>
+
+## Use Cases
+
+### Verify Backup Changes
+
+Confirm that a backup captured expected changes:
+
+```bash
+cloudstic diff previous-snapshot latest
+```
+
+### Investigate Issues
+
+Find out what files were affected between two points in time:
+
+```bash
+cloudstic diff snapshot-before snapshot-after
+```
+
+### Audit File Changes
+
+Track changes to specific directories over time:
+
+```bash
+cloudstic diff snap-1 snap-2 | grep "^modified" | grep "config/"
+```
+
+### Compare Sources
+
+Compare backups from different sources (e.g., production vs staging):
+
+```bash
+cloudstic diff prod-snapshot staging-snapshot
+```
+
+## Comparing Same Snapshot
+
+Comparing a snapshot to itself shows no changes:
+
+```bash
+cloudstic diff abc123 abc123
+```
+
+```plaintext
+Diffing snapshot/abc123... vs snapshot/abc123...
+```
+
+(No output — no changes)
+
+## Snapshot Order
+
+The order of snapshots affects the interpretation:
+
+### Forward Diff (Old → New)
+
+```bash
+cloudstic diff old-snapshot new-snapshot
+```
+
+- **added** — Files added in new snapshot
+- **removed** — Files removed in new snapshot
+- **modified** — Files changed in new snapshot
+
+### Reverse Diff (New → Old)
+
+```bash
+cloudstic diff new-snapshot old-snapshot
+```
+
+- **added** — Files that were removed (now re-added going back)
+- **removed** — Files that were added (now removed going back)
+- **modified** — Files that changed (reverse direction)
+
+<Tip>
+For most use cases, put the older snapshot first and the newer snapshot second to see "what changed since then".
+</Tip>
+
+## Performance
+
+Diff performance depends on:
+
+- **Snapshot size** — Number of files in the snapshots
+- **HAMT depth** — Deeper trees require more traversal
+- **Storage backend** — Cloud storage is slower than local storage
+- **Overlap** — Snapshots with more shared files are faster to compare
+
+Typical performance:
+
+- 1,000 files: less than 1 second
+- 10,000 files: 1-3 seconds (cloud storage)
+- 100,000 files: 10-30 seconds (cloud storage)
+
+<Note>
+Diff only loads metadata for files that exist in at least one snapshot. Unchanged files (same HAMT subtree) are skipped via structural sharing.
+</Note>
+
+## Directories vs Files
+
+The diff output shows both files and directories:
+
+- **Files** are compared by content hash (modified if content changed)
+- **Directories** are compared by their HAMT subtree hash (modified if any child changed)
+
+Example:
+
+```plaintext
+modified documents/
+added documents/report-Q2.pdf
+```
+
+The `documents/` directory is marked as modified because its contents changed (a file was added).
+
+## Unchanged Files
+
+By default, unchanged files are not shown. Use `-verbose` to see all files:
+
+```bash
+cloudstic diff a3f8d2 b1e9c7 -verbose
+```
+
+```plaintext
+Diffing snapshot/a3f8d2... vs snapshot/b1e9c7...
+
+unchanged documents/notes.txt
+added documents/report-Q2.pdf
+unchanged photos/IMG_001.jpg
+modified config/settings.json
+```
+
+## Encryption
+
+If your repository is encrypted, you must provide valid credentials:
+
+```bash
+cloudstic diff snap1 snap2 -encryption-password "my secret passphrase"
+```
+
+Snapshot metadata is encrypted at rest. The diff command decrypts objects as needed to perform the comparison.
+
+<Warning>
+Without valid encryption credentials, the command will fail with an authentication error.
+</Warning>
+
+## Machine-Readable Output
+
+The diff output is designed for both human and machine consumption:
+
+```bash
+# Count added files
+cloudstic diff snap1 snap2 | grep "^added" | wc -l
+
+# List modified config files
+cloudstic diff snap1 snap2 | grep "^modified" | grep "config/"
+
+# Extract file paths
+cloudstic diff snap1 snap2 | awk '{print $2}'
+```
+
+For more structured output, consider using the Go library API which returns typed `Change` objects.
+
+## Limitations
+
+### Content-Based Comparison Only
+
+Diff compares files by content hash, not by name. If a file is renamed without changing content, it appears as:
+
+```plaintext
+added new-name.txt
+removed old-name.txt
+```
+
+There's no "renamed" change type because content addressing doesn't track file identity across renames.
+
+### No Line-Level Diffs
+
+The diff shows which files changed, but not what changed within files. For line-level diffs, restore both snapshots and use external tools:
+
+```bash
+cloudstic restore snap1 -output snap1.zip
+cloudstic restore snap2 -output snap2.zip
+unzip snap1.zip -d snap1/
+unzip snap2.zip -d snap2/
+diff -ur snap1/ snap2/
+```
+
+## See Also
+
+- [cloudstic list](/commands/list) — List all backup snapshots
+- [cloudstic ls](/commands/ls) — Browse files within a specific snapshot
+- [cloudstic restore](/commands/restore) — Restore files from a snapshot
+- [cloudstic forget](/commands/forget) — Remove old snapshots based on retention policies

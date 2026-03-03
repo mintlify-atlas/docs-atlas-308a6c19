@@ -1,0 +1,392 @@
+---
+title: S3-Compatible Storage
+description: Store backups in Amazon S3, Cloudflare R2, MinIO, or any S3-compatible service
+---
+
+The S3 storage backend supports Amazon S3 and any S3-compatible service, including Cloudflare R2, MinIO, DigitalOcean Spaces, and more.
+
+## Configuration
+
+### Required Settings
+
+<ParamField path="CLOUDSTIC_STORE" type="string" required>
+  Set to `s3`
+</ParamField>
+
+<ParamField path="CLOUDSTIC_STORE_PATH" type="string" required>
+  The S3 bucket name (e.g., `my-backup-bucket`)
+</ParamField>
+
+<ParamField path="CLOUDSTIC_STORE_PREFIX" type="string" default="">
+  Optional prefix for all objects (e.g., `backups/`)
+</ParamField>
+
+<ParamField path="CLOUDSTIC_S3_REGION" type="string" default="us-east-1">
+  AWS region for the bucket
+</ParamField>
+
+### Authentication
+
+<Tabs>
+  <Tab title="AWS Credentials">
+    <ParamField path="AWS_ACCESS_KEY_ID" type="string" required>
+      AWS access key ID
+    </ParamField>
+
+    <ParamField path="AWS_SECRET_ACCESS_KEY" type="string" required>
+      AWS secret access key
+    </ParamField>
+
+    You can also use:
+    - `-s3-access-key` and `-s3-secret-key` flags
+    - AWS credential profiles (`~/.aws/credentials`)
+    - IAM instance roles (EC2, ECS, Lambda)
+  </Tab>
+
+  <Tab title="Custom Endpoint">
+    <ParamField path="CLOUDSTIC_S3_ENDPOINT" type="string">
+      Custom S3 endpoint URL (for R2, MinIO, etc.)
+    </ParamField>
+
+    For services like Cloudflare R2 or MinIO:
+
+    ```bash
+    # Cloudflare R2
+    export CLOUDSTIC_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+
+    # MinIO
+    export CLOUDSTIC_S3_ENDPOINT=https://minio.example.com:9000
+    ```
+  </Tab>
+</Tabs>
+
+## Examples
+
+<Tabs>
+  <Tab title="Amazon S3">
+    ```bash
+    # Set credentials
+    export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+    export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+    # Initialize repository
+    cloudstic init \
+      -store s3 \
+      -store-path my-backup-bucket \
+      -s3-region us-west-2
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Documents
+    ```
+  </Tab>
+
+  <Tab title="Cloudflare R2">
+    ```bash
+    # R2 credentials from Cloudflare dashboard
+    export AWS_ACCESS_KEY_ID=<r2-access-key-id>
+    export AWS_SECRET_ACCESS_KEY=<r2-secret-access-key>
+    export CLOUDSTIC_S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+
+    # Initialize (region is ignored for R2, but required)
+    cloudstic init \
+      -store s3 \
+      -store-path my-r2-bucket \
+      -s3-region auto
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Projects
+    ```
+
+    <Note>
+    Cloudflare R2 offers zero egress fees, making restores cost-effective.
+    </Note>
+  </Tab>
+
+  <Tab title="MinIO">
+    ```bash
+    # MinIO credentials (from MinIO server)
+    export AWS_ACCESS_KEY_ID=minioadmin
+    export AWS_SECRET_ACCESS_KEY=minioadmin
+    export CLOUDSTIC_S3_ENDPOINT=http://localhost:9000
+
+    # Initialize
+    cloudstic init \
+      -store s3 \
+      -store-path backups \
+      -s3-region us-east-1
+
+    # Backup
+    cloudstic backup -source local -source-path ~/Data
+    ```
+  </Tab>
+
+  <Tab title="With Prefix">
+    ```bash
+    # Use a prefix to organize multiple repositories in one bucket
+    export AWS_ACCESS_KEY_ID=...
+    export AWS_SECRET_ACCESS_KEY=...
+
+    # Repository for laptop
+    cloudstic init \
+      -store s3 \
+      -store-path shared-backup-bucket \
+      -store-prefix laptop/ \
+      -s3-region us-east-1
+
+    # Repository for server (different prefix)
+    cloudstic init \
+      -store s3 \
+      -store-path shared-backup-bucket \
+      -store-prefix server/ \
+      -s3-region us-east-1
+    ```
+  </Tab>
+</Tabs>
+
+## Features
+
+### High-Concurrency Uploads
+
+The S3 store uses optimized connection pooling:
+
+- **128 concurrent uploads** by default
+- **HTTP connection reuse** for reduced latency
+- **Parallel PUT operations** for chunk uploads
+
+This provides significantly faster backups compared to sequential uploads.
+
+### Path-Style Addressing
+
+For custom endpoints (R2, MinIO), Cloudstic automatically uses path-style addressing:
+
+```
+# Virtual-hosted style (AWS S3 default)
+https://my-bucket.s3.amazonaws.com/chunk/abc123
+
+# Path style (MinIO, R2)
+https://s3.example.com/my-bucket/chunk/abc123
+```
+
+### Packfile Optimization
+
+Packfiles bundle small objects to reduce PUT requests:
+
+- **Default enabled** for S3 backends
+- Reduces API costs significantly
+- Bundles objects less than 512KB into 8MB packs
+- Catalog stored in `index/packs`
+
+<CodeGroup>
+```bash Disable packfiles
+cloudstic init \
+  -store s3 \
+  -store-path my-bucket \
+  -enable-packfile=false
+```
+
+```bash Enable packfiles (default)
+cloudstic init \
+  -store s3 \
+  -store-path my-bucket \
+  -enable-packfile=true
+```
+</CodeGroup>
+
+## S3 Bucket Setup
+
+### Create a Bucket
+
+<Tabs>
+  <Tab title="AWS S3">
+    ```bash
+    # Using AWS CLI
+    aws s3 mb s3://my-backup-bucket --region us-west-2
+
+    # Enable versioning (recommended)
+    aws s3api put-bucket-versioning \
+      --bucket my-backup-bucket \
+      --versioning-configuration Status=Enabled
+    ```
+  </Tab>
+
+  <Tab title="Cloudflare R2">
+    ```bash
+    # Using Wrangler CLI
+    npx wrangler r2 bucket create my-r2-bucket
+    ```
+
+    Or create via the Cloudflare dashboard:
+    1. Go to R2 in your account
+    2. Click "Create bucket"
+    3. Generate API tokens under "Manage R2 API Tokens"
+  </Tab>
+
+  <Tab title="MinIO">
+    ```bash
+    # Using MinIO client (mc)
+    mc alias set myminio http://localhost:9000 minioadmin minioadmin
+    mc mb myminio/backups
+    ```
+  </Tab>
+</Tabs>
+
+### IAM Policy (AWS S3)
+
+Create a minimal IAM policy for Cloudstic:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+        "s3:HeadObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-backup-bucket",
+        "arn:aws:s3:::my-backup-bucket/*"
+      ]
+    }
+  ]
+}
+```
+
+## Performance Optimization
+
+### Region Selection
+
+Choose a region close to your location:
+
+```bash
+# US West (faster for West Coast)
+cloudstic init -store s3 -store-path my-bucket -s3-region us-west-1
+
+# EU (faster for Europe)
+cloudstic init -store s3 -store-path my-bucket -s3-region eu-west-1
+```
+
+### Transfer Acceleration (AWS S3)
+
+Enable S3 Transfer Acceleration for faster uploads over long distances:
+
+```bash
+# Enable on the bucket
+aws s3api put-bucket-accelerate-configuration \
+  --bucket my-backup-bucket \
+  --accelerate-configuration Status=Enabled
+
+# Use accelerated endpoint
+export CLOUDSTIC_S3_ENDPOINT=https://my-backup-bucket.s3-accelerate.amazonaws.com
+```
+
+## Cost Optimization
+
+### Storage Classes
+
+Use lifecycle policies to transition old backups to cheaper storage:
+
+```bash
+# Example: Transition to Glacier after 90 days
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket my-backup-bucket \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+**lifecycle.json:**
+```json
+{
+  "Rules": [
+    {
+      "Id": "ArchiveOldBackups",
+      "Status": "Enabled",
+      "Prefix": "snapshot/",
+      "Transitions": [
+        {
+          "Days": 90,
+          "StorageClass": "GLACIER"
+        }
+      ]
+    }
+  ]
+}
+```
+
+<Warning>
+If using lifecycle policies, remember that Glacier retrieval takes hours and has additional costs.
+</Warning>
+
+### Request Reduction
+
+Enable packfiles to reduce PUT request costs:
+
+- **Without packfiles**: 1 PUT per chunk/content/filemeta object
+- **With packfiles**: Objects bundled into 8MB packs
+
+For 10,000 files, this can reduce from 30,000+ PUTs to just a few hundred.
+
+## Troubleshooting
+
+### Credential Errors
+
+If you see "Unable to locate credentials":
+
+```bash
+# Verify credentials are set
+echo $AWS_ACCESS_KEY_ID
+echo $AWS_SECRET_ACCESS_KEY
+
+# Test with AWS CLI
+aws s3 ls s3://my-backup-bucket
+
+# Or set explicitly
+cloudstic backup \
+  -s3-access-key AKIAIOSFODNN7EXAMPLE \
+  -s3-secret-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+### Region Mismatch
+
+If you see "bucket is in this region" errors:
+
+```bash
+# Get the correct region
+aws s3api get-bucket-location --bucket my-backup-bucket
+
+# Use the correct region
+cloudstic init -store s3 -store-path my-backup-bucket -s3-region us-west-2
+```
+
+### Endpoint Configuration (R2/MinIO)
+
+If custom endpoints fail:
+
+```bash
+# Ensure endpoint includes protocol
+export CLOUDSTIC_S3_ENDPOINT=https://minio.example.com:9000  # Correct
+export CLOUDSTIC_S3_ENDPOINT=minio.example.com:9000          # Wrong
+
+# Test connectivity
+curl -I $CLOUDSTIC_S3_ENDPOINT
+```
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="Backup Command" icon="upload" href="/commands/backup">
+    Create backups to S3
+  </Card>
+  <Card title="B2 Storage" icon="cloud" href="/storage/b2">
+    Alternative cloud storage
+  </Card>
+  <Card title="Local Storage" icon="folder" href="/storage/local">
+    Use local filesystem
+  </Card>
+  <Card title="Encryption" icon="lock" href="/security/encryption">
+    Data encryption details
+  </Card>
+</CardGroup>

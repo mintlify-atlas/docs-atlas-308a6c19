@@ -1,0 +1,419 @@
+---
+title: System Architecture
+description: Understanding Cloudstic's layered architecture and data flow
+---
+
+Cloudstic CLI is built with a clean, layered architecture that separates concerns and enables flexible composition of storage backends, encryption, and compression.
+
+## High-Level Overview
+
+Cloudstic is a **content-addressable, encrypted backup tool** that supports multiple data sources and storage backends. Every backup operation produces immutable, deduplicated snapshots that can be restored independently.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         CLI Layer                            │
+│  (cmd/cloudstic/main.go - init, backup, restore, etc.)     │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                      Client API                              │
+│        (client.go - Public programmatic interface)          │
+└─────────────────────┬───────────────────────────────────────┘
+                      │
+┌─────────────────────▼───────────────────────────────────────┐
+│                    Engine Layer                              │
+│  (internal/engine/ - BackupManager, RestoreManager, etc.)   │
+└───┬──────────────┬──────────────┬──────────────┬───────────┘
+    │              │              │              │
+    ▼              ▼              ▼              ▼
+┌─────┐      ┌─────────┐    ┌────────┐    ┌──────────┐
+│HAMT │      │ Chunker │    │ Crypto │    │  Store   │
+│Tree │      │ FastCDC │    │AES-GCM │    │  Stack   │
+└─────┘      └─────────┘    └────────┘    └──────────┘
+```
+
+## Package Structure
+
+### Core Packages
+
+<Info>
+The codebase follows Go best practices with clear separation between public APIs and internal implementation details.
+</Info>
+
+#### `client.go` (Root)
+
+The **public API** for programmatic use. Re-exports types from internal packages using Go type aliases, providing a stable interface for library consumers.
+
+**Location:** `client.go:44`
+
+#### `cmd/cloudstic/`
+
+The **CLI entry point**. Each subcommand (`init`, `backup`, `restore`, `list`, `ls`, `prune`, `forget`, `diff`, `break-lock`, `add-recovery-key`) is implemented as a `run*()` function in `main.go`.
+
+- Uses Go's built-in `flag` package (no external dependencies like cobra/viper)
+- All commands use the `Client` API for consistency
+
+**Location:** `cmd/cloudstic/main.go:46`
+
+#### `internal/engine/`
+
+The **business logic layer**. Each operation has a dedicated `*Manager` struct:
+
+- `BackupManager` - Scans sources, chunks files, updates HAMT
+- `RestoreManager` - Reconstructs file trees from snapshots
+- `PruneManager` - Mark-and-sweep garbage collection
+- `ForgetManager` - Snapshot removal and retention policies
+- `DiffManager` - Snapshot comparison
+
+Each manager has a `Run(ctx)` method that executes the operation.
+
+**Location:** `internal/engine/`
+
+#### `internal/core/`
+
+**Domain types and models**. Defines the core data structures:
+
+- `Snapshot` - Point-in-time backup checkpoint
+- `FileMeta` - File metadata (name, size, mtime, content hash)
+- `Content` - Chunk manifest for file contents
+- `HAMTNode` - Merkle tree node (internal or leaf)
+- `RepoConfig` - Repository configuration
+- `SourceInfo` - Backup source identity
+
+Also contains `ComputeJSONHash()`, the canonical content-addressing function.
+
+**Location:** `internal/core/models.go:1-120`
+
+#### `internal/hamt/`
+
+**Persistent Hash Array Mapped Trie (HAMT)** implementation. A Merkle tree structure backed by the object store, used to efficiently track file→metadata mappings across snapshots.
+
+Key features:
+- **5 bits per level** → 32-way branching
+- **Structural sharing** between snapshots (only changed paths are rewritten)
+- **TransactionalStore** buffers writes and flushes only reachable nodes
+- **Max 32 entries per leaf**, max depth of 6 levels
+
+**Location:** `internal/hamt/hamt.go:1-602`
+
+#### `pkg/store/`
+
+The **storage abstraction layer**. Defines:
+
+- `ObjectStore` interface - Get/Put/List/Delete/Exists operations
+- Backend implementations: `LocalStore`, `S3Store`, `B2Store`, `SFTPStore`, `HybridStore`
+- `Source` and `IncrementalSource` interfaces for data sources
+- Store decorators: `CompressedStore`, `EncryptedStore`, `MeteredStore`, `PackStore`, `KeyCacheStore`
+
+**Location:** `pkg/store/`
+
+#### `pkg/crypto/`
+
+**Cryptographic primitives**:
+
+- **AES-256-GCM** encryption/decryption
+- **HKDF-SHA256** key derivation
+- **HMAC-SHA256** for content-addressed deduplication
+- **Argon2id** password-based key derivation
+- **BIP39** mnemonic recovery keys
+
+**Location:** `pkg/crypto/crypto.go:1-173`
+
+## Store Decorator Stack
+
+<Note>
+Cloudstic uses the **decorator pattern** to compose storage capabilities. The order of decorators is critical for correct operation.
+</Note>
+
+Stores are layered in this specific order:
+
+```
+Backup Engine
+    ↓
+CompressedStore      ← zstd compression (auto-detects format on read)
+    ↓
+EncryptedStore       ← AES-256-GCM (passes through keys/* unencrypted)
+    ↓
+MeteredStore         ← Tracks bytes written for progress reporting
+    ↓
+[PackStore]          ← Optional: bundles small objects into 8MB packs
+    ↓
+KeyCacheStore        ← Caches Exists() checks in local bbolt DB
+    ↓
+<Backend>            ← LocalStore, S3Store, B2Store, SFTPStore, HybridStore
+```
+
+### Decorator Details
+
+**CompressedStore** (`pkg/store/compressed.go`)
+- Compresses all writes with **zstd** (level 3)
+- Auto-detects compression on read: zstd, gzip, or raw
+- Transparent to upper layers
+
+**EncryptedStore** (`pkg/store/encrypted.go`)
+- Encrypts all objects with **AES-256-GCM**
+- **Exception:** Objects under `keys/` prefix pass through unencrypted (avoids chicken-and-egg problem)
+- Binary format: `version(1) || nonce(12) || ciphertext || tag(16)`
+- **29 bytes overhead** per object
+
+**MeteredStore** (`pkg/store/metered.go`)
+- Tracks bytes written for UI progress bars
+- No-op wrapper, just accounting
+
+**PackStore** (`pkg/store/pack.go`) - Optional
+- Buffers small objects (< 512KB) in memory
+- Flushes as **8MB packfiles** (`packs/<hash>`)
+- Maintains a catalog (`index/packs`) mapping logical keys to pack offsets
+- **Dramatically reduces API call count** for metadata-heavy workloads
+- Uses **LRU cache** for packfile reads (single fetch serves thousands of objects)
+
+**KeyCacheStore** (`pkg/store/keycache.go`)
+- Caches `Exists()` results in a temporary **bbolt** database
+- Uses **singleflight** to deduplicate concurrent writes for the same key
+- Critical for performance with remote backends (avoids redundant S3/B2 HEAD requests)
+
+## Object Key Conventions
+
+All objects follow a **flat, content-addressed namespace**:
+
+<Tip>
+Content-addressable storage ensures that identical data is stored only once, regardless of where it appears in the file tree or across snapshots.
+</Tip>
+
+| Prefix | Description | Example Key |
+|--------|-------------|--------------|
+| `chunk/` | Raw file data chunks (FastCDC boundaries) | `chunk/a3f5b8...` |
+| `content/` | Chunk manifests (list of chunk refs) | `content/7d9e2c...` |
+| `filemeta/` | File metadata (name, type, parents, content hash) | `filemeta/4b8f1a...` |
+| `node/` | HAMT internal/leaf nodes | `node/c9d2e5...` |
+| `snapshot/` | Point-in-time backup snapshots | `snapshot/6e3a9f...` |
+| `index/latest` | Mutable pointer to latest snapshot | `index/latest` |
+| `index/snapshots` | Snapshot catalog (summaries of all snapshots) | `index/snapshots` |
+| `index/packs` | Pack catalog (when packfiles enabled) | `index/packs` |
+| `keys/<slot>` | Encryption key slots (unencrypted) | `keys/platform-default` |
+| `config` | Repository marker (unencrypted) | `config` |
+
+### Hash Functions
+
+- **Chunks:** `HMAC-SHA256(dedup_key, data)` when encrypted, `SHA-256(data)` otherwise
+- **All other objects:** `SHA-256(canonical_json)`
+
+**Location:** `internal/engine/chunker.go:166-172`
+
+## Backup Data Flow
+
+<Info>
+Backups are **append-only** and **crash-safe**. An interrupted backup cannot corrupt existing snapshots.
+</Info>
+
+The backup process follows this sequence:
+
+### 1. Load Previous State
+
+```
+index/latest → snapshot/<hash> → HAMT root node → file tree
+```
+
+**Location:** `internal/engine/backup.go`
+
+### 2. Scan Source
+
+- **Full scan:** `source.Walk()` - enumerate all files
+- **Incremental scan:** `source.WalkChanges()` - only changed files (gdrive-changes, onedrive-changes)
+
+For each file:
+- Look up `fileId` in the old HAMT
+- Compare metadata (name, size, mtime, type, parents)
+- If unchanged, reuse the old `filemeta` reference (zero upload)
+- If changed or new, queue for upload
+
+**Location:** `internal/engine/backup.go`
+
+### 3. Chunk and Upload
+
+Concurrent worker pool (default: 10 workers) processes queued files:
+
+```
+File stream
+    ↓
+FastCDC chunker (512KB-1MB-8MB boundaries)
+    ↓
+HMAC-SHA256 (keyed by dedup key) or SHA-256
+    ↓
+zstd compression
+    ↓
+AES-256-GCM encryption
+    ↓
+store.Put("chunk/<hash>", data)  [skipped if Exists()]
+```
+
+**Location:** `internal/engine/chunker.go:46-143`
+
+Chunk references are collected into a `Content` object:
+
+```json
+{
+  "type": "content",
+  "size": 10485760,
+  "chunks": ["chunk/a3f5...", "chunk/7d9e..."]
+}
+```
+
+**Location:** `internal/core/models.go:20-27`
+
+A `FileMeta` object is created:
+
+```json
+{
+  "version": 1,
+  "fileId": "abc123",
+  "name": "invoice.pdf",
+  "type": "file",
+  "parents": ["filemeta/4b8f..."],
+  "content_hash": "7d9e2c...",
+  "size": 21733,
+  "mtime": 1710000000
+}
+```
+
+**Location:** `internal/core/models.go:29-43`
+
+### 4. Update HAMT
+
+The HAMT tree is updated with new `filemeta` references. The `TransactionalStore` buffers all intermediate nodes in memory.
+
+**Location:** `internal/hamt/cache.go`
+
+### 5. Flush HAMT
+
+Only reachable nodes are flushed to persistent storage (BFS from root). Intermediate superseded nodes are discarded.
+
+**Location:** `internal/hamt/cache.go`
+
+### 6. Create Snapshot
+
+A new `Snapshot` object is written:
+
+```json
+{
+  "version": 1,
+  "created": "2025-12-01T12:00:00Z",
+  "root": "node/c9d2e5...",
+  "seq": 42,
+  "source": {
+    "type": "gdrive",
+    "account": "user@gmail.com",
+    "path": "my-drive://"
+  }
+}
+```
+
+**Location:** `internal/core/models.go:78-89`
+
+### 7. Update Index
+
+The mutable `index/latest` pointer is updated atomically. This is the **commit point** - until this completes, the previous snapshot remains authoritative.
+
+**Location:** `internal/engine/backup.go`
+
+## Restore Data Flow
+
+Restoration reconstructs files from a snapshot:
+
+### 1. Resolve Snapshot
+
+```
+user specifies: "latest" or snapshot hash
+    ↓
+index/latest → snapshot/<hash> → HAMT root
+```
+
+### 2. Walk HAMT
+
+Traverse the HAMT to collect all `filemeta` entries.
+
+**Location:** `internal/hamt/hamt.go:61-66`
+
+### 3. Topological Sort
+
+Sort files by dependency (parent directories before children) to ensure correct creation order.
+
+**Location:** `internal/engine/restore.go`
+
+### 4. Path Reconstruction
+
+For each `filemeta`, walk the `parents` chain to build the full relative path.
+
+**Location:** `internal/engine/restore.go`
+
+### 5. Write ZIP Archive
+
+For each entry:
+- **Folders:** Write directory entry with stored `mtime`
+- **Files:** Load `content/<hash>` → fetch and decompress each chunk → stream to ZIP
+
+Output is always a ZIP archive (used by both CLI and web).
+
+**Location:** `internal/engine/restore.go`
+
+## HybridStore Architecture
+
+<Note>
+`HybridStore` is designed for multi-tenant SaaS deployments, routing metadata to PostgreSQL and chunks to B2.
+</Note>
+
+The `HybridStore` backend splits storage by object type:
+
+- **PostgreSQL** (with RLS): `filemeta/`, `node/`, `snapshot/`, `index/`, `config`
+- **Backblaze B2**: `chunk/`, `packs/`
+- **Write-through**: Metadata is also written to B2 for disaster recovery
+
+Tenant isolation uses PostgreSQL Row-Level Security:
+
+```sql
+SET LOCAL cloudstic.tenant_id = '<uuid>';
+```
+
+**Location:** `AGENTS.md:99`
+
+## FastCDC Chunking
+
+<Tip>
+FastCDC (Fast Content-Defined Chunking) enables efficient deduplication by splitting files at content-based boundaries, not fixed offsets.
+</Tip>
+
+Cloudstic uses the `fastcdc-go` library with these parameters:
+
+| Parameter | Value | Purpose |
+|-----------|-------|----------|
+| Min size | 512 KiB | Prevents excessive chunk fragmentation |
+| Avg size | 1 MiB | Target chunk size for good dedup/performance balance |
+| Max size | 8 MiB | Prevents unbounded memory usage |
+
+**Key benefits:**
+- Inserting/deleting bytes in a file only affects local chunks
+- Identical regions across files share chunks
+- Final chunk of a file may be smaller than min size
+
+**Location:** `internal/engine/chunker.go:24-28`
+
+## Concurrency Model
+
+Cloudstic uses Go's concurrency primitives for parallel operations:
+
+- **Backup upload:** 10 concurrent workers (configurable)
+- **HAMT flush:** 20 concurrent workers
+- **Chunk deduplication:** `singleflight` ensures each chunk is uploaded at most once, even with concurrent backups
+
+**Location:** `internal/engine/chunker.go:79` and `pkg/store/keycache.go`
+
+## Repository Locking
+
+Operations acquire locks to prevent conflicts:
+
+- **Shared lock:** Backup (multiple concurrent backups allowed)
+- **Exclusive lock:** Prune, forget (no concurrent operations)
+
+Locks are file-based (local) or object-based (remote), with stale lock detection.
+
+**Location:** `pkg/store/lock.go`

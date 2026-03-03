@@ -1,0 +1,566 @@
+---
+title: "Contributing Guide"
+description: "Guidelines for contributing to Cloudstic CLI development"
+---
+
+Welcome! We appreciate your help in making Cloudstic better. This guide covers development setup, testing, debugging, and contribution workflows.
+
+## Development Setup
+
+### Prerequisites
+
+- Go 1.21 or later
+- Docker (for hermetic E2E tests using Testcontainers)
+- `golangci-lint` (for linting)
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/cloudstic/cli.git
+cd cli
+```
+
+### Build the Binary
+
+```bash
+go build -o bin/cloudstic ./cmd/cloudstic
+```
+
+The binary will be created at `bin/cloudstic`.
+
+## Project Structure
+
+Cloudstic CLI is organized into clear package boundaries:
+
+- **`client.go`** (root) - Public `Client` API for programmatic use. Re-exports types from internal packages.
+- **`cmd/cloudstic/`** - CLI entry point. Each subcommand is a `run*()` function in `main.go`.
+- **`internal/engine/`** - Business logic for operations (backup, restore, prune, forget, diff, list). Each operation has a `*Manager` struct.
+- **`internal/core/`** - Domain types: `Snapshot`, `FileMeta`, `Content`, `HAMTNode`, `RepoConfig`, `SourceInfo`.
+- **`internal/hamt/`** - Persistent Merkle Hash Array Mapped Trie backed by the object store.
+- **`pkg/store/`** - `ObjectStore` interface and implementations. Also contains `Source` and `IncrementalSource` interfaces.
+- **`pkg/crypto/`** - AES-256-GCM encryption, HKDF key derivation, BIP39 mnemonic recovery keys.
+- **`internal/ui/`** - Console progress reporting and terminal helpers.
+
+<Tip>
+See `AGENTS.md` in the repository root for detailed architecture documentation.
+</Tip>
+
+## Build & Test Commands
+
+### Run All Tests
+
+```bash
+go test -v -race -count=1 ./...
+```
+
+This runs unit tests and hermetic E2E tests (using Testcontainers for MinIO and SFTP).
+
+<Note>
+Docker is required for hermetic E2E tests. Tests will be skipped if `/var/run/docker.sock` is not available.
+</Note>
+
+### Run a Single Test
+
+```bash
+go test -v -run TestName ./path/to/package
+```
+
+Example:
+
+```bash
+go test -v -run TestBackupLocal ./cmd/cloudstic
+```
+
+### Run with Race Detector
+
+```bash
+go test -v -race -count=1 ./...
+```
+
+The race detector catches concurrency bugs. Always run tests with `-race` during development.
+
+### Run the Full Check Script
+
+```bash
+./scripts/check.sh
+```
+
+This runs:
+1. `go fmt` - Format check
+2. `golangci-lint run` - Linting
+3. `go test -race -count=1 ./...` - Tests with race detection
+4. Coverage report generation
+
+### Format Code
+
+```bash
+go fmt ./...
+```
+
+### Lint Code
+
+```bash
+golangci-lint run ./...
+```
+
+## E2E Test Modes
+
+E2E tests in `cmd/cloudstic/` are controlled by the `CLOUDSTIC_E2E_MODE` environment variable:
+
+- **`hermetic`** (default) - Local filesystem + Testcontainers (MinIO, SFTP). Requires Docker.
+- **`live`** - Real cloud vendor APIs (requires secrets in environment variables).
+- **`all`** - Runs both hermetic and live tests.
+
+### Running Hermetic Tests
+
+```bash
+go test -v ./cmd/cloudstic
+```
+
+or explicitly:
+
+```bash
+CLOUDSTIC_E2E_MODE=hermetic go test -v ./cmd/cloudstic
+```
+
+### Running Live Tests
+
+<Note>
+Live tests require cloud provider credentials (AWS, Backblaze B2, Google Drive, OneDrive, SFTP servers) configured via environment variables.
+</Note>
+
+```bash
+CLOUDSTIC_E2E_MODE=live go test -v ./cmd/cloudstic
+```
+
+### Running All Tests
+
+```bash
+CLOUDSTIC_E2E_MODE=all go test -v ./cmd/cloudstic
+```
+
+## Debugging
+
+### Enable Debug Logging
+
+Append the `-debug` flag to any CLI command to enable verbose internal logging:
+
+```bash
+cloudstic backup -source local -source-path ./data -debug
+```
+
+This outputs:
+- Detailed timings for every `GET`, `PUT`, `LIST`, and `DELETE` operation
+- Cache hits/misses
+- Memory management decisions
+- Engine operation traces
+
+<Tip>
+Debug logging is extremely useful for tracing API calls, caching behaviors, and performance bottlenecks.
+</Tip>
+
+### Attach a Debugger
+
+You can use `dlv` (Delve) to debug the CLI:
+
+```bash
+go install github.com/go-delve/delve/cmd/dlv@latest
+dlv debug ./cmd/cloudstic -- backup -source local -source-path ./data
+```
+
+Or attach to a running process:
+
+```bash
+dlv attach <pid>
+```
+
+## Profiling
+
+Cloudstic supports standard Go profiling via hidden flags on any command:
+
+### CPU Profiling
+
+```bash
+cloudstic backup -source local -source-path ./data -cpuprofile cpu.prof
+go tool pprof -http=:8080 cpu.prof
+```
+
+The CPU profile flag also automatically generates:
+- `cpu.prof.goroutine` - Goroutine dump
+- `cpu.prof.block` - Block profile
+- `cpu.prof.mutex` - Mutex profile
+
+### Memory Profiling
+
+```bash
+cloudstic backup -source local -source-path ./data -memprofile mem.prof
+go tool pprof -http=:8080 mem.prof
+```
+
+### View Profiles
+
+Use `go tool pprof` to analyze profiles:
+
+```bash
+# Interactive mode
+go tool pprof cpu.prof
+
+# Web UI
+go tool pprof -http=:8080 cpu.prof
+
+# Generate flame graph
+go tool pprof -http=:8080 -flame cpu.prof
+```
+
+## Development Best Practices
+
+### When Adding New Features
+
+Always consider the following:
+
+#### 1. Documentation
+
+Check if user-facing documentation needs updates:
+- `docs/user-guide.md` - Add command documentation with usage examples, flags, and descriptions.
+- `README.md` - Update if the feature changes the quick start or high-level overview.
+- Code comments - Document public APIs, especially in `client.go` and package interfaces.
+
+#### 2. Unit Tests
+
+Add test coverage when it makes sense:
+- Always add tests for new public API methods (e.g., `Client.*()` methods).
+- Test both success and error cases.
+- Test integration with encryption/compression if applicable.
+- Use existing test patterns (see `client_test.go`, `internal/engine/*_test.go`).
+- Mock stores are available in `internal/engine/mock_test.go` for testing.
+
+#### 3. Client API
+
+For new operations, expose them via the `Client` struct:
+- CLI commands should use `Client` methods, not directly access stores.
+- This allows library users to programmatically use the functionality.
+- Follow the pattern: define types/options, add a `Client.*()` method, implement in `internal/engine/` if complex.
+
+#### 4. CLI Integration
+
+For new commands:
+- Add a `run*()` function in `cmd/cloudstic/main.go`.
+- Add the command to the switch case in `runCmd()`.
+- Add command documentation to `printUsage()`.
+- Use the `reorderArgs()` helper for proper flag parsing.
+
+#### 5. Error Handling
+
+Return descriptive errors:
+- Wrap errors with context using `fmt.Errorf("context: %w", err)`.
+- Provide actionable error messages to users.
+- Distinguish between user errors and system errors.
+
+### Example: Adding a New Command
+
+Let's say you want to add a `stats` command that shows repository statistics.
+
+**Step 1: Add Client Method**
+
+```go
+// client.go
+
+type StatsResult struct {
+	TotalSnapshots int64
+	TotalObjects   int64
+	TotalBytes     int64
+}
+
+func (c *Client) Stats(ctx context.Context) (*StatsResult, error) {
+	mgr := engine.NewStatsManager(c.store)
+	return mgr.Run(ctx)
+}
+```
+
+**Step 2: Implement Engine Logic**
+
+```go
+// internal/engine/stats.go
+
+type StatsManager struct {
+	store store.ObjectStore
+}
+
+func NewStatsManager(s store.ObjectStore) *StatsManager {
+	return &StatsManager{store: s}
+}
+
+func (m *StatsManager) Run(ctx context.Context) (*cloudstic.StatsResult, error) {
+	// Implementation here
+}
+```
+
+**Step 3: Add CLI Command**
+
+```go
+// cmd/cloudstic/main.go
+
+func runStats(args []string) error {
+	flags := flag.NewFlagSet("stats", flag.ExitOnError)
+	flags.Parse(args)
+
+	client, err := initClient()
+	if err != nil {
+		return err
+	}
+
+	result, err := client.Stats(context.Background())
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Total snapshots: %d\n", result.TotalSnapshots)
+	fmt.Printf("Total objects: %d\n", result.TotalObjects)
+	fmt.Printf("Total size: %s\n", formatBytes(result.TotalBytes))
+	return nil
+}
+```
+
+**Step 4: Register Command**
+
+```go
+// cmd/cloudstic/main.go - in runCmd()
+
+switch cmd {
+case "stats":
+	return runStats(args)
+// ... other commands ...
+}
+```
+
+**Step 5: Add Tests**
+
+```go
+// client_test.go
+
+func TestStats(t *testing.T) {
+	store := newMockStore()
+	client, _ := cloudstic.NewClient(store)
+
+	result, err := client.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.TotalSnapshots < 0 {
+		t.Errorf("expected non-negative snapshots, got %d", result.TotalSnapshots)
+	}
+}
+```
+
+**Step 6: Update Documentation**
+
+Add command documentation to `docs/user-guide.md` and update `printUsage()` in `main.go`.
+
+## Testing Guidelines
+
+### Test Coverage
+
+Aim for high test coverage, especially for:
+- Public API methods in `client.go`
+- Engine logic in `internal/engine/`
+- Store implementations in `pkg/store/`
+- Crypto operations in `pkg/crypto/`
+
+### Test Patterns
+
+#### Unit Tests
+
+Use mock stores for isolated testing:
+
+```go
+func TestBackupManager(t *testing.T) {
+	store := &MockStore{}
+	source := &MockSource{}
+
+	mgr := engine.NewBackupManager(source, store, ui.NewNoOpReporter(), nil)
+	result, err := mgr.Run(context.Background())
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.FilesAdded == 0 {
+		t.Error("expected files to be added")
+	}
+}
+```
+
+#### Integration Tests
+
+Use real stores with temporary directories:
+
+```go
+func TestBackupRestore(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, _ := store.NewLocalStore(tmpDir)
+	client, _ := cloudstic.NewClient(store)
+
+	// Run backup
+	source, _ := store.NewLocalSource("testdata")
+	backupResult, err := client.Backup(context.Background(), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run restore
+	var buf bytes.Buffer
+	restoreResult, err := client.Restore(context.Background(), &buf, backupResult.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if restoreResult.FilesRestored != backupResult.FilesAdded {
+		t.Errorf("expected %d files restored, got %d",
+			backupResult.FilesAdded, restoreResult.FilesRestored)
+	}
+}
+```
+
+#### E2E Tests
+
+Use Testcontainers for hermetic E2E tests:
+
+```go
+func TestBackupToS3(t *testing.T) {
+	if os.Getenv("CLOUDSTIC_E2E_MODE") == "" {
+		os.Setenv("CLOUDSTIC_E2E_MODE", "hermetic")
+	}
+
+	if os.Getenv("CLOUDSTIC_E2E_MODE") == "live" {
+		t.Skip("skipping hermetic test in live mode")
+	}
+
+	// Start MinIO container
+	ctx := context.Background()
+	minioC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "minio/minio:latest",
+			ExposedPorts: []string{"9000/tcp"},
+			Cmd:          []string{"server", "/data"},
+			Env: map[string]string{
+				"MINIO_ROOT_USER":     "minioadmin",
+				"MINIO_ROOT_PASSWORD": "minioadmin",
+			},
+			WaitingFor: wait.ForHTTP("/minio/health/live").WithPort("9000/tcp"),
+		},
+		Started: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer minioC.Terminate(ctx)
+
+	// Get endpoint
+	endpoint, _ := minioC.Endpoint(ctx, "")
+
+	// Test backup to MinIO
+	store, _ := store.NewS3Store("test-bucket", endpoint, "minioadmin", "minioadmin", "us-east-1")
+	client, _ := cloudstic.NewClient(store)
+
+	source, _ := store.NewLocalSource("testdata")
+	result, err := client.Backup(ctx, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.FilesAdded == 0 {
+		t.Error("expected files to be added")
+	}
+}
+```
+
+### Before Committing
+
+Always run the full check script:
+
+```bash
+./scripts/check.sh
+```
+
+This ensures:
+- Code is formatted correctly
+- No linting errors
+- All tests pass
+- Race conditions are detected
+- Coverage is adequate
+
+## Architecture Overview
+
+### Store Layering
+
+Stores are composed as a decorator chain (from outermost to innermost):
+
+```
+CompressedStore → EncryptedStore → MeteredStore → [PackStore] → KeyCacheStore → <backend>
+```
+
+- **CompressedStore** - zstd compression on write, auto-detects zstd/gzip/raw on read.
+- **EncryptedStore** - AES-256-GCM. Passes through objects under `keys/` prefix unencrypted.
+- **MeteredStore** - Tracks bytes written for reporting.
+- **PackStore** (optional) - Bundles small objects (less than 512KB) into 8MB packfiles to reduce API calls.
+- **KeyCacheStore** - Caches key existence in a temporary bbolt database.
+- **Backend** - `LocalStore`, `S3Store`, `B2Store`, `SFTPStore`, or `HybridStore`.
+
+### Backup Flow
+
+1. `BackupManager` acquires a shared lock, loads the previous snapshot (if any) for its source identity.
+2. Source is scanned via `Walk()` (full) or `WalkChanges()` (incremental).
+3. New/changed files are chunked using FastCDC, content-addressed, and uploaded.
+4. The HAMT tree is updated with new filemeta refs. `TransactionalStore` buffers all intermediate HAMT nodes and only flushes reachable ones from the final root.
+5. A new `Snapshot` object is written, and `index/latest` is updated.
+
+### Encryption Model
+
+- On `init`, a random 32-byte master key is generated and wrapped into key slots (password-based via scrypt, platform key, KMS-wrapped platform key, or BIP39 recovery key).
+- Key slots are stored under `keys/` prefix, which the `EncryptedStore` passes through unencrypted.
+- An HMAC dedup key is derived from the encryption key via HKDF for content-addressing without exposing plaintext hashes.
+
+## Pull Request Guidelines
+
+### Before Submitting
+
+1. **Run tests**: `./scripts/check.sh`
+2. **Update documentation**: Add/update user guide, README, and code comments
+3. **Add tests**: Cover new functionality with unit/integration tests
+4. **Format code**: `go fmt ./...`
+5. **Lint code**: `golangci-lint run ./...`
+
+### PR Description
+
+Include:
+- **What**: Brief description of the change
+- **Why**: Motivation or problem being solved
+- **How**: Implementation approach (if non-obvious)
+- **Testing**: How you tested the change
+
+### Commit Messages
+
+Use descriptive commit messages:
+
+```
+Add stats command for repository statistics
+
+- Implement StatsManager in internal/engine
+- Expose Client.Stats() method
+- Add CLI command in cmd/cloudstic/main.go
+- Add tests and documentation
+```
+
+## Getting Help
+
+If you have questions or need help:
+
+- Check `AGENTS.md` for architecture details
+- Review existing code for patterns
+- Open a GitHub issue for discussion
+- Join our community chat (if available)
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the same license as the project.

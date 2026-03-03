@@ -1,0 +1,237 @@
+---
+title: cloudstic restore
+description: Restore files from a backup snapshot to a ZIP archive
+---
+
+Restore files from a backup snapshot to a ZIP archive. You can restore the entire snapshot, a specific file, or a subdirectory tree.
+
+## Usage
+
+```bash
+cloudstic restore [snapshot_id] [options]
+```
+
+If no snapshot ID is provided, the latest snapshot is restored.
+
+## Options
+
+<ParamField path="snapshot_id" type="string" default="latest">
+  Snapshot ID to restore from. Can be:
+  - Full snapshot hash (e.g., `a3f8d2e1...`)
+  - Short prefix (e.g., `a3f8d2`)
+  - `latest` (default) — restores the most recent snapshot
+</ParamField>
+
+<ParamField path="-output" type="string" default="./restore.zip">
+  Output ZIP file path.
+  
+  The ZIP file will be created in the specified location. Parent directories must exist.
+</ParamField>
+
+<ParamField path="-path" type="string" default="">
+  Restore only the given file or subtree.
+  
+  Examples:
+  - `Documents/report.pdf` — restore a single file
+  - `Documents/` — restore entire Documents directory
+  - `Photos/2024/` — restore a subdirectory
+  
+  If not specified, the entire snapshot is restored.
+</ParamField>
+
+<ParamField path="-dry-run" type="boolean" default="false">
+  Show what would be restored without creating the archive.
+  
+  Displays file count, directory count, and estimated uncompressed size.
+</ParamField>
+
+### Global Options
+
+
+## Examples
+
+<CodeGroup>
+```bash Latest Snapshot
+cloudstic restore
+```
+
+```bash Specific Snapshot
+cloudstic restore a3f8d2e1
+```
+
+```bash Custom Output Path
+cloudstic restore abc123 -output ~/backups/restore-2024-03-15.zip
+```
+
+```bash Single File
+cloudstic restore latest -path Documents/report.pdf
+```
+
+```bash Directory Tree
+cloudstic restore latest -path Photos/2024/
+```
+
+```bash Dry Run
+cloudstic restore latest -path Documents/ -dry-run
+```
+
+```bash With Verbose Output
+cloudstic restore -output full-restore.zip -verbose
+```
+</CodeGroup>
+
+## Output
+
+### Successful Restore
+
+```plaintext
+Restore complete. Snapshot: snapshot/a3f8d2e1...
+  Files: 127, Dirs: 18
+  Archive: ./restore.zip (45.3 MiB)
+```
+
+### Dry Run Output
+
+```plaintext
+Restore dry run complete. Snapshot: snapshot/a3f8d2e1...
+  Files: 127, Dirs: 18
+  Estimated size: 45.3 MiB
+```
+
+## Archive Format
+
+Restored files are packaged as a ZIP archive with the following properties:
+
+- **Directory structure preserved** — Files maintain their original paths
+- **File metadata** — Modification times are preserved
+- **Compression** — Standard ZIP deflate compression (data is already compressed in the repository, so additional compression gain is minimal)
+- **Permissions** — File permissions and ownership are NOT preserved (limitation of ZIP format)
+
+<Note>
+The ZIP archive contains the full directory tree. If you restore a single file like `Documents/report.pdf`, the archive will contain a `Documents/` folder with `report.pdf` inside.
+</Note>
+
+## Snapshot Selection
+
+You can specify snapshots in multiple ways:
+
+### By Full Hash
+
+```bash
+cloudstic restore a3f8d2e1c4b5a6f9d0e7c8b1a2f3d4e5
+```
+
+### By Short Prefix
+
+```bash
+cloudstic restore a3f8d2
+```
+
+Cloudstic will match the shortest unique prefix. If multiple snapshots match, an error is returned with the ambiguous matches.
+
+### By "latest"
+
+```bash
+cloudstic restore latest
+```
+
+Restores the most recent snapshot based on creation time.
+
+<Tip>
+Use `cloudstic list` to view all available snapshots with their IDs and creation times.
+</Tip>
+
+## Path Filtering
+
+The `-path` flag filters files based on their path within the snapshot:
+
+### File Path
+
+Restore a single file:
+
+```bash
+cloudstic restore latest -path Documents/report.pdf
+```
+
+### Directory Path
+
+Restore an entire directory (note the trailing slash):
+
+```bash
+cloudstic restore latest -path Documents/
+```
+
+### Nested Path
+
+Restore a subdirectory:
+
+```bash
+cloudstic restore latest -path Photos/2024/January/
+```
+
+<Note>
+Paths are case-sensitive and must match the exact path structure in the snapshot. Use `cloudstic ls` to explore the snapshot's directory tree.
+</Note>
+
+## Performance
+
+Restore performance depends on:
+
+- **File size** — Larger files take longer to download and write
+- **File count** — Many small files have more overhead than fewer large files
+- **Network bandwidth** — Download speed from your storage backend
+- **Storage backend** — Cloud storage (S3, B2) is slower than local storage
+
+Typical restore speeds:
+
+- Local storage: 100-500 MB/s
+- Cloud storage (S3/B2): 10-50 MB/s (depends on your internet connection)
+- SFTP: 5-20 MB/s (depends on SSH overhead and network latency)
+
+<Tip>
+Use `-verbose` to see per-file progress during restore. Use `-quiet` to suppress progress bars.
+</Tip>
+
+## Error Handling
+
+If a restore fails:
+
+- The partially written ZIP file is automatically deleted
+- Non-zero exit code is returned
+- Error message indicates the cause (missing snapshot, network error, etc.)
+
+Common errors:
+
+- **Snapshot not found** — The specified snapshot ID doesn't exist. Use `cloudstic list` to view available snapshots.
+- **Path not found** — The specified `-path` doesn't exist in the snapshot. Use `cloudstic ls <snapshot>` to explore the snapshot contents.
+- **Disk full** — Not enough space for the output ZIP file.
+- **Permission denied** — Can't write to the output path. Check file permissions.
+
+## Concurrent Restores
+
+Multiple concurrent restore operations are safe:
+
+- Restores only read from the repository (no writes)
+- Multiple users can restore from the same repository simultaneously
+- Restores do not interfere with backups or other operations
+
+## Encryption
+
+If your repository is encrypted, you must provide credentials via:
+
+- `-encryption-password` (or `CLOUDSTIC_ENCRYPTION_PASSWORD`)
+- `-encryption-key` (or `CLOUDSTIC_ENCRYPTION_KEY`)
+- `-recovery-key` (or `CLOUDSTIC_RECOVERY_KEY`)
+- `-kms-key-arn` (for AWS KMS-encrypted repositories)
+
+Without valid credentials, restore will fail with an authentication error.
+
+<Warning>
+The restored ZIP file is NOT encrypted. Make sure to store it securely or delete it after use.
+</Warning>
+
+## See Also
+
+- [cloudstic list](/commands/list) — List all backup snapshots
+- [cloudstic ls](/commands/ls) — Browse files within a snapshot
+- [cloudstic diff](/commands/diff) — Compare snapshots to find changed files

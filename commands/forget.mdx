@@ -1,0 +1,492 @@
+---
+title: cloudstic forget
+description: Remove snapshots from backup history using retention policies
+---
+
+## Overview
+
+The `cloudstic forget` command removes snapshots from the repository. It supports two modes:
+
+1. **Single snapshot mode** — Remove a specific snapshot by ID
+2. **Policy mode** — Apply retention rules to automatically keep/remove snapshots based on age and frequency
+
+Removing snapshots with `forget` only deletes the snapshot objects themselves. The actual data chunks remain in the repository until you run [`prune`](/commands/prune) to reclaim storage.
+
+## Usage
+
+### Remove a specific snapshot
+
+```bash
+cloudstic forget <snapshot_id> [options]
+```
+
+### Apply a retention policy
+
+```bash
+cloudstic forget --keep-last N [--keep-daily N] [--keep-weekly N] [options]
+```
+
+## How It Works
+
+### Single Snapshot Mode
+
+1. Deletes the specified snapshot object (`snapshot/<id>`)
+2. Updates the snapshot catalog to remove the entry
+3. If the deleted snapshot was the latest, re-elects a new latest from remaining snapshots
+4. Optionally runs prune if `-prune` flag is set
+
+### Policy Mode
+
+1. **Load snapshots** — Reads all snapshots from the repository
+2. **Filter** — Applies filters (`-tag`, `-source`, `-account`, `-path`) to select candidates
+3. **Group** — Groups snapshots by fields (`-group-by`) like source, account, or path
+4. **Evaluate policy** — For each group, applies retention rules to determine keep/remove sets
+5. **Remove** — Deletes snapshots not matched by any keep rule
+6. **Prune** — Optionally runs garbage collection if `-prune` flag is set
+
+<Note>
+  **OR logic:** A snapshot is kept if it matches ANY keep rule. For example, if a snapshot is both a "last" snapshot and a "daily" snapshot, it will be kept.
+</Note>
+
+## Options
+
+### Flags
+
+<ParamField path="-prune" type="flag">
+  Automatically run prune after forgetting to reclaim storage space. Without this flag, storage is not freed until you manually run `cloudstic prune`.
+  
+  **Default:** `false`
+</ParamField>
+
+<ParamField path="-dry-run" type="flag">
+  Show what would be removed without actually deleting anything. Displays keep/remove decisions for each group.
+  
+  **Default:** `false`
+</ParamField>
+
+<ParamField path="-verbose" type="flag">
+  Log detailed information about each snapshot being processed.
+  
+  **Default:** `false`
+</ParamField>
+
+### Retention Policy Options
+
+<ParamField path="-keep-last" type="int">
+  Keep the N most recent snapshots (by creation timestamp).
+  
+  **Default:** `0` (disabled)
+</ParamField>
+
+<ParamField path="-keep-hourly" type="int">
+  Keep one snapshot per hour for the last N hours that have snapshots. Keeps the newest snapshot in each hourly bucket.
+  
+  **Default:** `0` (disabled)
+</ParamField>
+
+<ParamField path="-keep-daily" type="int">
+  Keep one snapshot per day for the last N days that have snapshots. Keeps the newest snapshot in each daily bucket.
+  
+  **Default:** `0` (disabled)
+</ParamField>
+
+<ParamField path="-keep-weekly" type="int">
+  Keep one snapshot per ISO week for the last N weeks that have snapshots. Keeps the newest snapshot in each weekly bucket.
+  
+  **Default:** `0` (disabled)
+</ParamField>
+
+<ParamField path="-keep-monthly" type="int">
+  Keep one snapshot per month for the last N months that have snapshots. Keeps the newest snapshot in each monthly bucket.
+  
+  **Default:** `0` (disabled)
+</ParamField>
+
+<ParamField path="-keep-yearly" type="int">
+  Keep one snapshot per year for the last N years that have snapshots. Keeps the newest snapshot in each yearly bucket.
+  
+  **Default:** `0` (disabled)
+</ParamField>
+
+### Filtering Options
+
+<ParamField path="-tag" type="string" repeatable>
+  Only consider snapshots that have this tag. Can be specified multiple times — snapshots must have ALL specified tags.
+  
+  **Default:** (none)
+</ParamField>
+
+<ParamField path="-source" type="string">
+  Only consider snapshots from this source type (e.g., `local`, `gdrive`, `onedrive`).
+  
+  **Default:** (none)
+</ParamField>
+
+<ParamField path="-account" type="string">
+  Only consider snapshots from this account (e.g., `user@example.com` for cloud sources).
+  
+  **Default:** (none)
+</ParamField>
+
+<ParamField path="-path" type="string">
+  Only consider snapshots from this source path.
+  
+  **Default:** (none)
+</ParamField>
+
+### Grouping Options
+
+<ParamField path="-group-by" type="string">
+  Comma-separated list of fields to group snapshots by before applying the policy. Valid fields: `source`, `account`, `path`, `tags`. Empty string disables grouping (applies policy globally).
+  
+  **Default:** `"source,account,path"` (group by source identity)
+</ParamField>
+
+### Global Options
+
+- `-store`, `-store-path` — Storage backend configuration
+- `-encryption-password`, `-encryption-key` — Repository credentials
+- `-quiet` — Suppress progress bars
+
+## Examples
+
+### Remove a specific snapshot
+
+```bash
+cloudstic forget abc123def456
+```
+
+Removes the snapshot with ID `abc123def456`. Storage is not reclaimed until prune runs.
+
+### Remove a snapshot and prune immediately
+
+```bash
+cloudstic forget abc123def456 -prune
+```
+
+Deletes the snapshot and immediately reclaims storage space.
+
+### Keep last 10 snapshots
+
+```bash
+cloudstic forget --keep-last 10
+```
+
+Keeps the 10 most recent snapshots and removes all older ones.
+
+### Keep daily snapshots for 30 days
+
+```bash
+cloudstic forget --keep-daily 30
+```
+
+Keeps one snapshot per day for the last 30 days. Older snapshots and duplicates within the same day are removed.
+
+### Comprehensive retention policy
+
+```bash
+cloudstic forget \
+  --keep-last 5 \
+  --keep-daily 7 \
+  --keep-weekly 4 \
+  --keep-monthly 12 \
+  --keep-yearly 2 \
+  --prune
+```
+
+Keeps:
+- 5 most recent snapshots
+- 1 snapshot per day for last 7 days
+- 1 snapshot per week for last 4 weeks
+- 1 snapshot per month for last 12 months
+- 1 snapshot per year for last 2 years
+
+Then immediately prunes unreachable data.
+
+### Preview retention policy
+
+```bash
+cloudstic forget \
+  --keep-last 10 \
+  --keep-daily 7 \
+  --dry-run
+```
+
+Shows which snapshots would be kept/removed without deleting anything:
+
+```
+Snapshots for source:local, path:/home/user/documents:
+
+keep 10 snapshots:
+  Seq  Created              Snapshot Hash  Source  Path                     Reasons
+  50   2026-03-03 10:00     a3f4c2e1...    local   /home/user/documents     last, daily snapshot
+  49   2026-03-02 10:00     b5e6d3f2...    local   /home/user/documents     last, daily snapshot
+  ...
+
+remove 15 snapshots:
+  Seq  Created              Snapshot Hash  Source  Path
+  35   2026-02-15 10:00     c7g8h4i5...    local   /home/user/documents
+  ...
+
+25 snapshots would be removed (dry run)
+```
+
+### Keep snapshots with specific tag
+
+```bash
+cloudstic forget --keep-last 5 --tag production
+```
+
+Applies the retention policy only to snapshots tagged with `production`. Other snapshots are unaffected.
+
+### Separate policies per source
+
+```bash
+cloudstic forget \
+  --keep-daily 30 \
+  --source gdrive \
+  --account user@example.com
+```
+
+Applies policy only to Google Drive snapshots from `user@example.com`. Due to default grouping, snapshots from other sources are unaffected.
+
+### Global policy (no grouping)
+
+```bash
+cloudstic forget --keep-last 10 --group-by ""
+```
+
+Disables grouping and applies the policy globally across all snapshots regardless of source, account, or path.
+
+## Output
+
+### Single Snapshot Mode
+
+```bash
+$ cloudstic forget abc123def456
+
+Forgetting snapshot... done
+
+Snapshot removed.
+```
+
+### Policy Mode
+
+```bash
+$ cloudstic forget --keep-last 10 --keep-daily 7
+
+Snapshots for source:local, account:, path:/home/user/documents:
+
+keep 10 snapshots:
+  Seq  Created              Snapshot Hash       Source  Account  Path                     Tags  Reasons
+  50   2026-03-03 10:00     a3f4c2e1d8b9...    local            /home/user/documents           last, daily snapshot
+  49   2026-03-02 10:00     b5e6d3f2e9a8...    local            /home/user/documents           last, daily snapshot
+  48   2026-03-01 10:00     c7f8g4h5i6j7...    local            /home/user/documents           last, daily snapshot
+  ...
+
+remove 15 snapshots:
+  Seq  Created              Snapshot Hash       Source  Account  Path                     Tags
+  35   2026-02-15 10:00     d9k0l1m2n3o4...    local            /home/user/documents
+  34   2026-02-14 10:00     e1p2q3r4s5t6...    local            /home/user/documents
+  ...
+
+Removing snapshots... done
+
+15 snapshots have been removed
+```
+
+### Policy Mode with Prune
+
+```bash
+$ cloudstic forget --keep-last 10 --prune
+
+Snapshots for source:local, account:, path:/home/user/documents:
+
+keep 10 snapshots:
+  ...
+
+remove 15 snapshots:
+  ...
+
+Removing snapshots... done
+Marking reachable objects... done
+Sweeping unreachable objects... done
+
+15 snapshots have been removed
+
+Prune complete.
+  Objects scanned:  8,421
+  Objects deleted:  3,204
+  Space reclaimed:  2.4 GiB
+```
+
+## Understanding Retention Policies
+
+### Time Buckets
+
+Time-based rules (hourly, daily, weekly, monthly, yearly) work by grouping snapshots into buckets:
+
+- **Hourly:** `2026-03-03 10` (year-month-day hour)
+- **Daily:** `2026-03-03` (year-month-day)
+- **Weekly:** `2026-W09` (ISO year-week)
+- **Monthly:** `2026-03` (year-month)
+- **Yearly:** `2026` (year)
+
+For each bucket, the **newest snapshot** in that bucket is kept.
+
+### OR Logic
+
+A snapshot is kept if it matches **any** keep rule. For example:
+
+```bash
+cloudstic forget --keep-last 5 --keep-daily 7
+```
+
+- The 5 most recent snapshots are kept due to `--keep-last`
+- Additionally, one snapshot per day for the last 7 days is kept due to `--keep-daily`
+- If a snapshot qualifies under both rules, it's kept (and shown with multiple reasons)
+- Snapshots that match neither rule are removed
+
+### Grouping
+
+By default, policies are applied per `(source, account, path)` group. This means:
+
+- Local backups from `/home/user/docs` and `/home/user/photos` are treated as separate groups
+- Google Drive backups from different accounts are treated as separate groups
+- Each group has the policy applied independently
+
+Use `-group-by` to customize:
+
+```bash
+# Apply policy per source only
+cloudstic forget --keep-last 10 --group-by source
+
+# Apply policy globally
+cloudstic forget --keep-last 10 --group-by ""
+```
+
+## Difference Between Forget and Prune
+
+| Command | Purpose | What It Removes | Storage Impact |
+|---------|---------|----------------|----------------|
+| **forget** | Remove snapshots from history | Snapshot objects (`snapshot/*`) | Minimal (only snapshot metadata) |
+| **prune** | Reclaim storage from unreachable data | Orphaned chunks, content, filemeta, HAMT nodes | Significant (actual file data) |
+
+<Note>
+  **Key concept:** `forget` removes the **pointers** to data (snapshots), making data unreachable. `prune` removes the **data itself** that is no longer reachable. Always run `prune` after `forget` to actually free storage, or use `forget -prune` to do both in one command.
+</Note>
+
+## Best Practices
+
+### Use dry run first
+
+Always preview the impact before removing snapshots:
+
+```bash
+cloudstic forget --keep-last 10 --keep-daily 7 --dry-run
+```
+
+### Prune regularly
+
+Either use `-prune` flag or schedule regular prune runs:
+
+```bash
+# Option 1: Forget with immediate prune
+cloudstic forget --keep-last 10 --prune
+
+# Option 2: Forget then prune separately
+cloudstic forget --keep-last 10
+cloudstic prune
+```
+
+### Automate with cron
+
+Schedule retention policy enforcement:
+
+```bash
+# /etc/cron.weekly/cloudstic-forget
+#!/bin/bash
+cloudstic forget --keep-last 10 --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune
+```
+
+### Test with verbose output
+
+Use `-verbose` to see exactly what's happening:
+
+```bash
+cloudstic forget --keep-last 5 --verbose --dry-run
+```
+
+## Advanced Usage
+
+### Multiple tags
+
+```bash
+cloudstic forget --keep-last 5 --tag production --tag important
+```
+
+Only affects snapshots that have BOTH `production` AND `important` tags.
+
+### Filter by source and account
+
+```bash
+cloudstic forget \
+  --keep-daily 30 \
+  --source gdrive \
+  --account user@example.com
+```
+
+Applies policy only to Google Drive snapshots from the specified account.
+
+### Custom grouping
+
+```bash
+# Group by source and tags only (ignore account and path)
+cloudstic forget --keep-last 10 --group-by source,tags
+
+# Group by path only
+cloudstic forget --keep-last 10 --group-by path
+```
+
+## Error Handling
+
+### Snapshot not found
+
+```bash
+$ cloudstic forget nonexistent
+Forget failed: object not found
+```
+
+**Solution:** Use `cloudstic list` to see available snapshot IDs.
+
+### Empty policy
+
+```bash
+$ cloudstic forget
+Usage: cloudstic forget [options] <snapshot_id>
+       cloudstic forget --keep-last n [--keep-daily n] [--prune] [--dry-run]
+```
+
+**Solution:** Provide either a snapshot ID or at least one `--keep-*` option.
+
+### No snapshots match filter
+
+```bash
+$ cloudstic forget --keep-last 5 --tag nonexistent
+
+No snapshots to remove
+```
+
+The filter excluded all snapshots. Check your filter criteria.
+
+## Related Commands
+
+- [`prune`](/commands/prune) — Reclaim storage after forgetting snapshots
+- [`list`](/commands/list) — List all snapshots to see what's available
+- [`backup`](/commands/backup) — Create new snapshots
+
+## See Also
+
+- [Retention Policies Guide](/guides/retention-policies) — Design effective retention strategies
+- [Repository Maintenance](/guides/first-backup) — Best practices for long-term health
+- [Storage Backends](/storage/overview) — Configure where snapshots are stored

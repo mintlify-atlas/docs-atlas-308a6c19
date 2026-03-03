@@ -1,0 +1,188 @@
+---
+title: Introduction to Cloudstic CLI
+description: Content-addressable, encrypted backup tool for Google Drive, OneDrive, and local files with deduplicated storage
+---
+
+## Welcome to Cloudstic CLI
+
+Cloudstic is a content-addressable backup tool that creates encrypted, deduplicated snapshots of your files from local directories, Google Drive, OneDrive, or SFTP servers and stores them securely on local storage, Amazon S3, Backblaze B2, or SFTP servers.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="bolt" href="/quickstart">
+    Get your first backup running in under 5 minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Cloudstic on macOS, Linux, or Windows
+  </Card>
+  <Card title="User Guide" icon="book" href="https://github.com/cloudstic/cli/blob/main/docs/user-guide.md">
+    Complete command reference and advanced usage
+  </Card>
+  <Card title="Cloud Service" icon="cloud" href="https://cloudstic.com">
+    Zero-ops managed backup solution
+  </Card>
+</CardGroup>
+
+## Key Features
+
+Cloudstic CLI is built for security, efficiency, and flexibility:
+
+<AccordionGroup>
+  <Accordion title="Encrypted by Default" icon="lock">
+    All backup data is encrypted with **AES-256-GCM** before leaving your machine. Choose from multiple authentication methods:
+    - **Password-based encryption** with Argon2id key derivation
+    - **Platform keys** for automation and CI/CD workflows
+    - **Recovery keys** using BIP39 24-word seed phrases
+    - **Multiple key slots** allow different credentials to unlock the same repository
+    
+    Encryption is mandatory by default — you must explicitly opt out with `--no-encryption` if needed.
+  </Accordion>
+
+  <Accordion title="Content-Addressable Storage" icon="database">
+    Files are split into chunks and stored by their SHA-256 content hash. This provides:
+    - **Automatic deduplication** across all backups
+    - **Identical files stored only once**, regardless of location or filename
+    - **Incremental backups** that only upload changed chunks
+    - **Efficient storage** that scales with unique data, not backup count
+  </Accordion>
+
+  <Accordion title="Multiple Data Sources" icon="folder">
+    Back up from diverse sources with a single tool:
+    - **Local directories** — Backup any folder on your filesystem
+    - **Google Drive** — Full scan or incremental via Changes API
+    - **OneDrive** — Full scan or incremental via Delta API
+    - **SFTP servers** — Remote server backups
+    
+    Each source supports **gitignore-style exclude patterns** to skip development artifacts, build outputs, and temporary files.
+  </Accordion>
+
+  <Accordion title="Flexible Storage Backends" icon="server">
+    Store your encrypted backups wherever you need:
+    - **Local filesystem** — External drives, NAS, or local directories
+    - **Amazon S3** — Including S3-compatible services like Cloudflare R2, MinIO, and Wasabi
+    - **Backblaze B2** — Cost-effective cloud storage
+    - **SFTP** — Remote servers accessible via SSH
+    
+    Use prefixes to namespace multiple repositories within the same bucket.
+  </Accordion>
+
+  <Accordion title="Intelligent Retention Policies" icon="calendar">
+    Automatically manage backup lifecycle with flexible retention rules:
+    - `--keep-last N` — Keep the most recent snapshots
+    - `--keep-daily N` — Keep one snapshot per day
+    - `--keep-weekly N` — Keep one snapshot per week
+    - `--keep-monthly N` — Keep one snapshot per month
+    - `--keep-yearly N` — Keep one snapshot per year
+    
+    Apply different policies per source, tag, or account for granular control.
+  </Accordion>
+
+  <Accordion title="Point-in-Time Restore" icon="clock-rotate-left">
+    Restore any file from any snapshot at any time:
+    - Restore entire snapshots as ZIP archives
+    - Extract individual files by path
+    - Restore entire directory subtrees
+    - Preview restore contents with `--dry-run`
+    - Compare snapshots with `diff` command
+  </Accordion>
+</AccordionGroup>
+
+## How It Works
+
+Cloudstic uses a content-addressable storage model with Merkle tree indexing:
+
+<Steps>
+  <Step title="Initialize Repository">
+    Create an encrypted repository with your chosen storage backend. A master encryption key is generated and wrapped into key slots protected by your credentials.
+  </Step>
+  
+  <Step title="Backup Source">
+    Cloudstic scans your source (local directory, cloud drive, or SFTP server), chunks files using FastCDC, and computes SHA-256 hashes for each chunk.
+  </Step>
+  
+  <Step title="Deduplicate & Upload">
+    Only new chunks are compressed (zstd), encrypted (AES-256-GCM), and uploaded. Chunks that already exist in your repository are skipped automatically.
+  </Step>
+  
+  <Step title="Build Snapshot Tree">
+    File metadata is stored in a persistent Hash Array Mapped Trie (HAMT) structure, creating an immutable snapshot that references all files and their chunks.
+  </Step>
+  
+  <Step title="Update Index">
+    The snapshot is written to the repository and the index pointer is updated. Your backup is now complete and ready for restore.
+  </Step>
+</Steps>
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Personal Backups" icon="house">
+    Protect your documents, photos, and important files with encrypted backups to cloud storage or external drives.
+  </Card>
+  
+  <Card title="Cloud Drive Protection" icon="cloud-arrow-down">
+    Create versioned, deduplicated snapshots of Google Drive or OneDrive without relying on vendor lock-in.
+  </Card>
+  
+  <Card title="Development Workflows" icon="code">
+    Back up project directories with intelligent exclude patterns for `node_modules/`, `.git/`, and build artifacts.
+  </Card>
+  
+  <Card title="Server Backups" icon="server">
+    Automate encrypted backups from remote SFTP servers to cost-effective cloud storage with platform key authentication.
+  </Card>
+</CardGroup>
+
+## Architecture Highlights
+
+<Note>
+  Cloudstic is built with a layered architecture for maximum flexibility:
+  
+  **Store Layering**: `CompressedStore → EncryptedStore → MeteredStore → [PackStore] → KeyCacheStore → Backend`
+  
+  **Object Types**: All objects are content-addressed with keys like `chunk/<hash>`, `content/<hash>`, `filemeta/<hash>`, `snapshot/<hash>`
+  
+  **Incremental Sources**: Google Drive and OneDrive sources support incremental backups via change/delta APIs for dramatically faster subsequent backups.
+</Note>
+
+## Supported Platforms
+
+<CodeGroup>
+```bash macOS
+# Install via Homebrew
+brew install cloudstic/tap/cloudstic
+```
+
+```bash Linux
+# Install via Homebrew
+brew install cloudstic/tap/cloudstic
+
+# Or download binary from releases
+curl -L https://github.com/cloudstic/cli/releases/latest/download/cloudstic_linux_amd64.tar.gz | tar xz
+```
+
+```powershell Windows
+# Install via winget
+winget install Cloudstic.CLI
+```
+
+```bash Go
+# Install with Go toolchain
+go install github.com/cloudstic/cli/cmd/cloudstic@latest
+```
+</CodeGroup>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Install Cloudstic" icon="download" href="/installation">
+    Get Cloudstic installed on your system
+  </Card>
+  
+  <Card title="Quick Start Guide" icon="rocket" href="/quickstart">
+    Create your first backup in minutes
+  </Card>
+</CardGroup>
+
+<Tip>
+  Don't want to manage infrastructure? [Cloudstic Cloud](https://cloudstic.com) handles scheduling, storage, and retention automatically with the same encryption and deduplication engine.
+</Tip>

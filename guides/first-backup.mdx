@@ -1,0 +1,334 @@
+---
+title: "Creating Your First Backup"
+description: "Complete walkthrough of initializing a repository and creating your first encrypted backup with Cloudstic"
+---
+
+This guide walks you through setting up Cloudstic and creating your first encrypted backup, from installation to verification.
+
+## Prerequisites
+
+Before you begin, ensure you have:
+
+- Cloudstic CLI installed ([installation instructions](/installation))
+- A directory you want to back up
+- A storage location (local directory, S3 bucket, B2 bucket, or SFTP server)
+
+## Step 1: Initialize Your Repository
+
+First, create an encrypted repository. Encryption is required by default in Cloudstic.
+
+<Steps>
+  <Step title="Choose your storage location">
+    Decide where to store your backups. For this example, we'll use a local directory, but you can also use S3, B2, or SFTP.
+
+    ```bash
+    # Local storage (default)
+    export CLOUDSTIC_STORE=local
+    export CLOUDSTIC_STORE_PATH=~/backups
+
+    # Or for S3
+    # export CLOUDSTIC_STORE=s3
+    # export CLOUDSTIC_STORE_PATH=my-backup-bucket
+    # export AWS_ACCESS_KEY_ID=your-key
+    # export AWS_SECRET_ACCESS_KEY=your-secret
+
+    # Or for Backblaze B2
+    # export CLOUDSTIC_STORE=b2
+    # export CLOUDSTIC_STORE_PATH=my-bucket-name
+    # export B2_KEY_ID=your-key-id
+    # export B2_APP_KEY=your-app-key
+    ```
+  </Step>
+
+  <Step title="Initialize the repository">
+    Create the repository with password-based encryption. We strongly recommend also creating a recovery key.
+
+    ```bash
+    cloudstic init -encryption-password "your strong passphrase" -recovery
+    ```
+
+    <Warning>
+      **Write down your recovery key immediately!** It will only be displayed once. If you lose your password, this 24-word phrase is your only way to recover your backups.
+    </Warning>
+
+    You'll see output like this:
+
+    ```
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                      RECOVERY KEY                           ║
+    ╠══════════════════════════════════════════════════════════════╣
+    ║                                                              ║
+    ║  word1 word2 word3 ... word24                                ║
+    ║                                                              ║
+    ║  Write down these 24 words and store them in a safe place.   ║
+    ║  This is the ONLY time the recovery key will be displayed.   ║
+    ║  If you lose your password, this key is your only way to     ║
+    ║  recover your encrypted backups.                             ║
+    ║                                                              ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    Repository initialized (encrypted: true).
+    ```
+  </Step>
+
+  <Step title="Store your credentials safely">
+    Save your encryption password in a secure location:
+    - Use a password manager (1Password, Bitwarden, etc.)
+    - Write down your recovery key phrase on paper and store it in a safe place
+    - Never commit passwords to version control
+  </Step>
+</Steps>
+
+<Tip>
+  For convenience, save your password as an environment variable:
+  ```bash
+  echo 'export CLOUDSTIC_ENCRYPTION_PASSWORD="your passphrase"' >> ~/.bashrc
+  source ~/.bashrc
+  ```
+  This way, you won't need to provide `-encryption-password` with every command.
+</Tip>
+
+## Step 2: Create Your First Backup
+
+Now that your repository is initialized, let's back up a directory.
+
+<Steps>
+  <Step title="Back up a local directory">
+    Start with a simple backup of a local folder:
+
+    ```bash
+    cloudstic backup -source local -source-path ~/Documents
+    ```
+
+    You'll see progress output:
+
+    ```
+    Scanning source...
+    Processing files: 1247/1247 [============================] 100%
+    Uploading chunks: 8532 chunks, 2.3 GiB
+    Writing snapshot...
+
+    Backup complete.
+      Files:     847 new, 0 changed, 0 unmodified, 0 removed
+      Dirs:      400 new, 0 changed, 0 unmodified, 0 removed
+      Raw data:  2.34 GiB
+      Stored:    2.31 GiB (compressed)
+      Duration:  1m 34s
+    ```
+  </Step>
+
+  <Step title="Exclude unwanted files (optional)">
+    If you want to skip certain files or directories, use exclude patterns:
+
+    ```bash
+    cloudstic backup -source local -source-path ~/project \
+      -exclude ".git/" -exclude "node_modules/" -exclude "*.tmp"
+    ```
+
+    Or create a `.backupignore` file:
+
+    ```
+    # .backupignore
+    .git/
+    node_modules/
+    __pycache__/
+    *.tmp
+    *.log
+    build/
+    dist/
+    ```
+
+    Then reference it:
+
+    ```bash
+    cloudstic backup -source local -source-path ~/project \
+      -exclude-file ~/project/.backupignore
+    ```
+  </Step>
+
+  <Step title="Add tags (optional)">
+    Tags help organize your backups:
+
+    ```bash
+    cloudstic backup -source local -source-path ~/Documents \
+      -tag daily -tag important
+    ```
+  </Step>
+
+  <Step title="Dry run first (optional)">
+    Preview what will be backed up without actually writing data:
+
+    ```bash
+    cloudstic backup -source local -source-path ~/Documents -dry-run
+    ```
+  </Step>
+</Steps>
+
+## Step 3: Verify Your Backup
+
+After creating a backup, verify it was successful.
+
+<Steps>
+  <Step title="List snapshots">
+    View all backups in your repository:
+
+    ```bash
+    cloudstic list
+    ```
+
+    Output:
+
+    ```
+    +-----+---------------------+------------------+--------+---------+------------+------+
+    | Seq | Created             | Snapshot Hash    | Source | Account | Path       | Tags |
+    +-----+---------------------+------------------+--------+---------+------------+------+
+    | 1   | 2026-03-03 10:30:15 | abc123def456...  | local  |         | /Documents |      |
+    +-----+---------------------+------------------+--------+---------+------------+------+
+    ```
+  </Step>
+
+  <Step title="List files in the snapshot">
+    Browse the contents of your backup:
+
+    ```bash
+    cloudstic ls
+    ```
+
+    Or for a specific snapshot:
+
+    ```bash
+    cloudstic ls abc123def456
+    ```
+  </Step>
+
+  <Step title="Verify integrity (optional)">
+    Run a full integrity check to ensure all data is readable:
+
+    ```bash
+    cloudstic check
+    ```
+
+    Output:
+
+    ```
+    Repository check complete.
+      Snapshots checked:  1
+      Objects verified:   1247
+      Errors found:       0
+
+    No errors found — repository is healthy.
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Run `cloudstic check -read-data` for a deeper verification that re-hashes all chunk data. This takes longer but detects silent corruption.
+</Tip>
+
+## Step 4: Create Incremental Backups
+
+Subsequent backups are incremental — only new or changed files are uploaded.
+
+```bash
+# Make some changes to your documents
+echo "New file" > ~/Documents/new-file.txt
+
+# Run another backup
+cloudstic backup -source local -source-path ~/Documents
+```
+
+Output:
+
+```
+Backup complete.
+  Files:     1 new, 0 changed, 846 unmodified, 0 removed
+  Dirs:      0 new, 1 changed, 399 unmodified, 0 removed
+  Raw data:  9 B
+  Stored:    142 B (compressed + encrypted)
+  Duration:  3s
+```
+
+<Note>
+  Cloudstic uses content-addressable storage with deduplication. Identical files across snapshots are stored only once, saving significant space.
+</Note>
+
+## Common Patterns
+
+### Backing Up Multiple Sources
+
+You can back up different sources into the same repository:
+
+<CodeGroup>
+```bash Documents
+cloudstic backup -source local -source-path ~/Documents -tag documents
+```
+
+```bash Projects
+cloudstic backup -source local -source-path ~/projects -tag code
+```
+
+```bash Google Drive
+cloudstic backup -source gdrive-changes -tag cloud
+```
+</CodeGroup>
+
+### Using Configuration Files
+
+For complex setups, use environment variables:
+
+```bash ~/.bashrc
+export CLOUDSTIC_STORE=s3
+export CLOUDSTIC_STORE_PATH=my-backup-bucket
+export CLOUDSTIC_ENCRYPTION_PASSWORD="your passphrase"
+export AWS_ACCESS_KEY_ID=your-key
+export AWS_SECRET_ACCESS_KEY=your-secret
+```
+
+Then commands become simpler:
+
+```bash
+cloudstic backup -source local -source-path ~/Documents
+cloudstic list
+cloudstic restore
+```
+
+## Troubleshooting
+
+### "Repository not initialized" Error
+
+Make sure you've run `cloudstic init` first and are pointing to the correct storage location.
+
+### Authentication Errors
+
+For cloud storage (S3, B2), verify your credentials are set:
+
+```bash
+# For S3
+echo $AWS_ACCESS_KEY_ID
+echo $AWS_SECRET_ACCESS_KEY
+
+# For B2
+echo $B2_KEY_ID
+echo $B2_APP_KEY
+```
+
+### Slow First Backup
+
+The first backup is always slower because all files must be uploaded. Subsequent backups are much faster due to incremental processing and deduplication.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Retention Policies" icon="clock" href="/guides/retention-policies">
+    Learn how to automatically manage snapshot lifecycle
+  </Card>
+  <Card title="Restoring Files" icon="arrow-rotate-left" href="/guides/restoring-files">
+    Recover files from your backups
+  </Card>
+  <Card title="Encryption Keys" icon="key" href="/guides/encryption-keys">
+    Manage passwords and recovery keys
+  </Card>
+  <Card title="Automation" icon="robot" href="/guides/automation">
+    Schedule automatic backups with cron
+  </Card>
+</CardGroup>

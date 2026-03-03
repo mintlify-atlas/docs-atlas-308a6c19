@@ -1,0 +1,457 @@
+---
+title: "cloudstic key passwd"
+description: "Change the repository password"
+---
+
+## Overview
+
+The `cloudstic key passwd` command changes the password for an encrypted repository. This updates the password key slot without re-encrypting any backup data, making password rotation fast and efficient.
+
+## Usage
+
+```bash
+cloudstic key passwd [options]
+```
+
+## Description
+
+Changing your repository password updates the password key slot by:
+
+1. Unlocking the master encryption key using your **current** credentials
+2. Generating a new random salt for Argon2id key derivation
+3. Deriving a new wrapping key from the **new** password
+4. Re-wrapping the master key with the new wrapping key
+5. Overwriting the `keys/password-default` slot
+
+**Important characteristics:**
+
+- **No data re-encryption** — Only the key slot is updated, not your actual backups
+- **Instant operation** — Completes in seconds regardless of repository size
+- **Preserves other credentials** — Platform keys, recovery keys, and KMS keys remain valid
+- **Forward-only** — The old password immediately stops working after the change
+
+## Prerequisites
+
+You must **already have access** to the repository using one of:
+
+- `-encryption-password` — Your **current** repository password
+- `-encryption-key` — Your platform key (64 hex characters)
+- `-kms-key-arn` — AWS KMS key ARN (for KMS-encrypted repositories)
+
+The command uses these credentials to unlock the master key before wrapping it with the new password.
+
+## Flags
+
+<ParamField path="-new-password" type="string">
+  The new repository password. If not provided, you will be prompted interactively (recommended for security). The password cannot be empty.
+</ParamField>
+
+### Authentication Flags (Current Credentials)
+
+<ParamField path="-encryption-password" type="string">
+  Your **current** repository password. Can also be set via `CLOUDSTIC_ENCRYPTION_PASSWORD` environment variable. Required if not using platform key or KMS.
+</ParamField>
+
+<ParamField path="-encryption-key" type="string">
+  Platform key as 64 hex characters (alternative to password). Can also be set via `CLOUDSTIC_ENCRYPTION_KEY` environment variable.
+</ParamField>
+
+<ParamField path="-kms-key-arn" type="string">
+  AWS KMS key ARN for unlocking KMS-encrypted repositories. Can also be set via `CLOUDSTIC_KMS_KEY_ARN` environment variable. Requires AWS credentials configured via environment or IAM role.
+</ParamField>
+
+## Examples
+
+### Change password with interactive prompts
+
+```bash
+cloudstic key passwd
+```
+
+You will be prompted for:
+1. **Current repository password** (if not provided via flag/env var)
+2. **New repository password**
+3. **Confirm new repository password**
+
+Example session:
+```
+Current repository password: ************
+Enter new repository password: ****************
+Confirm new repository password: ****************
+Repository password has been changed.
+```
+
+### Change password with flags (non-interactive)
+
+```bash
+cloudstic key passwd \
+  -encryption-password "old password" \
+  -new-password "new strong password"
+```
+
+<Warning>
+  Providing passwords via command-line flags is **less secure** than interactive prompts. The password may be visible in process lists and shell history. Use environment variables or interactive mode for sensitive operations.
+</Warning>
+
+### Change password using environment variables
+
+```bash
+export CLOUDSTIC_ENCRYPTION_PASSWORD="old password"
+cloudstic key passwd -new-password "new strong password"
+```
+
+### Change password with platform key authentication
+
+```bash
+cloudstic key passwd \
+  -encryption-key "a1b2c3d4e5f6789..." \
+  -new-password "new password"
+```
+
+This is useful when:
+- You have access via platform key but want to add/change a password
+- You're migrating from platform key to password-based authentication
+- You need to reset a forgotten password using an alternate credential
+
+### Change password for remote repository
+
+```bash
+cloudstic key passwd \
+  -store s3 \
+  -store-path my-backup-bucket \
+  -s3-region us-west-2
+```
+
+Interactive prompts will guide you through the password change.
+
+### Change password with KMS authentication
+
+```bash
+cloudstic key passwd \
+  -kms-key-arn "arn:aws:kms:us-east-1:123456789012:key/abc-def" \
+  -store s3 \
+  -store-path my-s3-bucket
+```
+
+You'll be prompted for the new password (current password not needed since KMS unlocks the repository).
+
+## Password Requirements
+
+<Note>
+  Cloudstic does not enforce specific password complexity requirements. Choose a strong password using best practices: length (20+ characters), randomness, or a passphrase (5+ words).
+</Note>
+
+### Recommended Password Strategies
+
+**Diceware Passphrase** (recommended):
+```
+correct-horse-battery-staple-mountain-forest
+```
+- 6 random words from wordlist
+- ~77 bits of entropy
+- Easy to remember, hard to crack
+
+**Random Password** (for password managers):
+```
+T8$mX2!pL9#vK3@qN7
+```
+- 20+ mixed characters
+- ~120 bits of entropy
+- Store in password manager
+
+### Password Storage Recommendations
+
+- **Password managers** — 1Password, Bitwarden, KeePassXC, etc.
+- **Offline backup** — Write down and store securely (safe, lockbox)
+- **Recovery key** — Generate with [`key add-recovery`](/commands/key-add-recovery) for additional backup
+
+## Interactive vs Non-Interactive Mode
+
+### Interactive Mode (Recommended)
+
+If you run `cloudstic key passwd` without providing current and new passwords via flags:
+
+```bash
+cloudstic key passwd
+```
+
+**Benefits:**
+- Passwords not visible in process list or shell history
+- Confirmation prompt prevents typos
+- No plaintext password files required
+
+**Prompts:**
+1. Current password (masked input)
+2. New password (masked input)
+3. Confirm new password (masked input)
+
+### Non-Interactive Mode
+
+Provide passwords via flags:
+
+```bash
+cloudstic key passwd \
+  -encryption-password "current" \
+  -new-password "new"
+```
+
+**Use cases:**
+- Automation/scripting (CI/CD, cron jobs)
+- Non-TTY environments (Docker, remote execution)
+- Programmatic password rotation
+
+**Security considerations:**
+- Use environment variables instead of CLI flags when possible
+- Clear history after execution: `history -c`
+- Use process isolation (containers, sandboxes)
+
+## Key Slot Behavior
+
+### What Changes
+
+✅ **Updated:**
+- `keys/password-default` slot is overwritten
+- New Argon2id salt is generated (32 random bytes)
+- New KDF parameters may be applied (if defaults changed)
+- Wrapped master key is re-encrypted with new wrapping key
+
+❌ **Unchanged:**
+- Master encryption key remains the same
+- All backup data remains encrypted with the same key
+- Platform key, recovery key, and KMS key slots are untouched
+- Other credentials continue working normally
+
+### After Password Change
+
+- **Old password** immediately stops working for all operations
+- **New password** is required for future unlocks (backup, restore, list, etc.)
+- **Alternative credentials** (recovery key, platform key, KMS) still work
+
+<Note>
+  If you have the repository mounted or clients running, they will continue using their cached encryption key until they restart. The password change takes effect for new sessions.
+</Note>
+
+## Argon2id Parameters
+
+The new password slot uses Argon2id key derivation with the following default parameters:
+
+- **Algorithm:** Argon2id (hybrid mode, resistant to side-channel and GPU attacks)
+- **Time (iterations):** 3
+- **Memory:** 65536 KB (64 MB)
+- **Threads:** 4
+- **Salt:** 32 random bytes (unique per password change)
+
+These parameters are stored in the key slot and used every time the password unlocks the repository:
+
+```json
+{
+  "slot_type": "password",
+  "wrapped_key": "...",
+  "label": "default",
+  "kdf_params": {
+    "algorithm": "argon2id",
+    "salt": "<base64-encoded salt>",
+    "time": 3,
+    "memory": 65536,
+    "threads": 4
+  }
+}
+```
+
+### Performance Impact
+
+Argon2id key derivation takes approximately:
+- **~300-500ms** on modern CPUs (with default parameters)
+- **64 MB RAM** per unlock operation
+- **4 CPU threads** (parallelizable)
+
+This intentional slowdown protects against brute-force attacks while remaining fast enough for legitimate use.
+
+## Error Messages
+
+### Repository not initialized
+```
+Repository not initialized -- run 'cloudstic init' first.
+```
+**Solution:** Initialize the repository with `cloudstic init` before changing passwords.
+
+### Repository is not encrypted
+```
+Repository is not encrypted -- nothing to change.
+```
+**Solution:** Unencrypted repositories (created with `--no-encryption`) don't have passwords. You cannot add encryption after initialization.
+
+### Failed to unlock repository
+```
+Failed to unlock repository: no provided credential matches
+```
+**Solution:** Your current credentials are incorrect. Verify:
+- Password is typed correctly (check Caps Lock)
+- Platform key matches the `keys/platform-default` slot
+- KMS key ARN is correct and IAM permissions allow decryption
+
+### Passwords do not match
+```
+Error: passwords do not match.
+```
+**Solution:** The confirmation password didn't match. Retype carefully or use copy-paste.
+
+### Empty password
+```
+Error: password cannot be empty.
+```
+**Solution:** Provide a non-empty password. Cloudstic requires at least one character (though longer passwords are strongly recommended).
+
+### Missing credentials
+```
+Provide --encryption-key, --encryption-password, or --kms-key-arn to unlock the master key.
+```
+**Solution:** You must authenticate with your **current** credentials before setting a new password. Provide one of the credential flags or run interactively.
+
+## Use Cases
+
+### Routine password rotation
+```bash
+cloudstic key passwd  # Interactive prompts
+```
+
+Change your password every 90-180 days as a security best practice.
+
+### Suspected compromise
+```bash
+cloudstic key passwd -encryption-password "old password" -new-password "new strong password"
+```
+
+Immediately rotate your password if you suspect it was exposed (phishing, keylogger, data breach, etc.).
+
+### Migration from platform key to password
+```bash
+# Start: repository has only platform key
+cloudstic key passwd -encryption-key "a1b2..." -new-password "my password"
+
+# Now: repository has both platform key and password
+```
+
+Adds password authentication while preserving platform key access.
+
+### Reset forgotten password using recovery key
+```bash
+export CLOUDSTIC_RECOVERY_KEY="word1 word2 word3 ... word24"
+cloudstic key passwd -new-password "new password"
+```
+
+Use your recovery key to regain access and set a new password.
+
+### Automation/scripting
+```bash
+#!/bin/bash
+export CLOUDSTIC_ENCRYPTION_PASSWORD="$(cat /secrets/current_password)"
+NEW_PASSWORD="$(generate_password)"  # Your password generator
+
+cloudstic key passwd -new-password "$NEW_PASSWORD" \
+  -store s3 -store-path backup-bucket
+
+echo "$NEW_PASSWORD" > /secrets/new_password
+```
+
+Automated password rotation in CI/CD or scheduled jobs.
+
+## Security Considerations
+
+### When to Change Your Password
+
+✅ **Change immediately if:**
+- You suspect compromise (malware, phishing, data breach)
+- Shared password with someone who no longer needs access
+- Password was transmitted insecurely (email, chat, unencrypted channel)
+- Device with stored password was lost or stolen
+
+🔄 **Change periodically:**
+- Every 90-180 days as routine maintenance
+- After team member departures
+- During security audits
+
+### Does Changing Password Re-Encrypt Data?
+
+**No.** Cloudstic uses envelope encryption:
+
+1. **Master key** — Random 32-byte key generated during `init` (never changes)
+2. **Wrapping key** — Derived from your password via Argon2id
+3. **Wrapped master key** — Stored in the password key slot
+4. **Data encryption key** — Derived from master key via HKDF
+
+Changing your password only updates the **wrapping key** and **wrapped master key** in the `keys/password-default` slot. The **master key** stays the same, so all your backup data remains valid without re-encryption.
+
+### Revoking Access
+
+Changing the password does **not** revoke access for:
+
+- Users with the **recovery key** (still valid)
+- Users with the **platform key** (still valid)
+- Users with **KMS access** via IAM policies (still valid)
+- Users with the **master key** cached in running processes
+
+To fully revoke password-based access:
+1. Change the password (locks out old password)
+2. Ensure no other key slots exist (or rotate those too)
+3. Verify no running processes have cached keys
+
+### Multiple Credentials
+
+If your repository has multiple credential types:
+
+```bash
+cloudstic key list
+# Output:
+# password | default | argon2id
+# recovery | default | —
+# platform | default | —
+```
+
+Changing the password **only affects** the `password` slot. The `recovery` and `platform` slots remain unchanged. Anyone with the recovery key or platform key can still access the repository.
+
+## Global Options
+
+
+- `-store`, `-store-path`, `-store-prefix` — Specify repository location
+- `-s3-*`, `-sftp-*`, etc. — Storage backend configuration
+- `-debug` — Log detailed operations
+
+## Related Commands
+
+- [`cloudstic key list`](/commands/key-list) — List all key slots (verify password slot exists)
+- [`cloudstic key add-recovery`](/commands/key-add-recovery) — Generate recovery key (password-independent backup)
+- [`cloudstic init`](/commands/init) — Initialize repository with initial password
+- [`cloudstic cat`](/commands/cat) — View raw key slot JSON objects (`cat keys/password-default`)
+
+## Technical Details
+
+### Password Wrapping Process
+
+1. **Unlock master key** using current credentials
+2. **Generate salt** (32 random bytes via `crypto/rand`)
+3. **Derive wrapping key** from new password:
+   ```
+   wrapping_key = Argon2id(password, salt, t=3, m=65536, p=4)
+   ```
+4. **Wrap master key** with AES-256-GCM:
+   ```
+   wrapped_key = AES-GCM-Encrypt(master_key, wrapping_key)
+   ```
+5. **Store wrapped key** at `keys/password-default`:
+   ```json
+   {
+     "slot_type": "password",
+     "wrapped_key": "<base64>",
+     "label": "default",
+     "kdf_params": { ... }
+   }
+   ```
+
+### Key Slot Overwrite
+
+The command **overwrites** the existing `keys/password-default` object. This is atomic at the object store level (S3, B2, etc.). There is no period where both old and new passwords work simultaneously.
+
+### Backward Compatibility
+
+Changing your password does not affect repository compatibility. All Cloudstic versions that support password authentication can open the updated key slot (Argon2id has been the default KDF since the initial encrypted repository implementation).
