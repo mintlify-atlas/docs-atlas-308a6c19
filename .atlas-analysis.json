@@ -1,0 +1,159 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Cloudstic CLI",
+  "projectDescription": "Content-addressable, encrypted backup tool for Google Drive, OneDrive, and local files",
+  "theme": "aspen",
+  "primaryColor": "#2563eb",
+  "lightColor": "#3b82f6",
+  "darkColor": "#1e40af",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/content-addressing",
+              "concepts/encryption",
+              "concepts/snapshots"
+            ]
+          },
+          {
+            "group": "Sources",
+            "pages": [
+              "sources/overview",
+              "sources/local",
+              "sources/sftp",
+              "sources/google-drive",
+              "sources/onedrive"
+            ]
+          },
+          {
+            "group": "Storage Backends",
+            "pages": [
+              "storage/overview",
+              "storage/local",
+              "storage/s3",
+              "storage/b2",
+              "storage/sftp"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/first-backup",
+              "guides/retention-policies",
+              "guides/restoring-files",
+              "guides/encryption-keys",
+              "guides/automation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Command Reference",
+        "groups": [
+          {
+            "group": "Repository Management",
+            "pages": [
+              "commands/init",
+              "commands/check",
+              "commands/break-lock"
+            ]
+          },
+          {
+            "group": "Backup & Restore",
+            "pages": [
+              "commands/backup",
+              "commands/restore",
+              "commands/list",
+              "commands/ls",
+              "commands/diff"
+            ]
+          },
+          {
+            "group": "Maintenance",
+            "pages": [
+              "commands/prune",
+              "commands/forget"
+            ]
+          },
+          {
+            "group": "Key Management",
+            "pages": [
+              "commands/key-list",
+              "commands/key-add-recovery",
+              "commands/key-passwd"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "commands/cat",
+              "commands/completion"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "advanced/storage-model",
+              "advanced/hamt-structure",
+              "advanced/object-types",
+              "advanced/backup-flow"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "advanced/client-api",
+              "advanced/source-interface",
+              "advanced/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AES-256-GCM encryption with password, platform key, or recovery key slots",
+    "Content-addressable storage with deduplication across sources",
+    "Incremental backups using FastCDC chunking",
+    "Multiple sources: Google Drive, OneDrive, local directories, SFTP",
+    "Multiple backends: local filesystem, Amazon S3, Backblaze B2, SFTP",
+    "Retention policies: keep-last, hourly, daily, weekly, monthly, yearly",
+    "Point-in-time restore with ZIP archive output",
+    "HAMT-based merkle tree for efficient snapshot management"
+  ],
+  "publicApiSurface": [
+    "cloudstic init",
+    "cloudstic backup",
+    "cloudstic restore",
+    "cloudstic list",
+    "cloudstic ls",
+    "cloudstic prune",
+    "cloudstic forget",
+    "cloudstic diff",
+    "cloudstic break-lock",
+    "cloudstic key list",
+    "cloudstic key add-recovery",
+    "cloudstic key passwd",
+    "cloudstic check",
+    "cloudstic cat",
+    "cloudstic completion"
+  ]
+}
